@@ -1,0 +1,943 @@
+<title>Lava Hash</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@1,9..144,300;1,9..144,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  :root {
+    --ground: #120e17;
+    --panel: #17121e;
+    --line: #2b2334;
+    --line-soft: #211a2a;
+    --ink: #eee4d8;
+    --ink-dim: #a094ab;
+    --ink-faint: #5f5569;
+    --wax: #ff7a3d;
+  }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--ink);
+    font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 13px;
+    line-height: 1.45;
+    overflow: hidden;
+    color-scheme: dark;
+  }
+  .app {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 336px;
+    height: 100vh;
+    height: 100dvh;
+  }
+  .wall { position: relative; min-width: 0; min-height: 0; }
+  .wall canvas { display: block; width: 100%; height: 100%; cursor: crosshair; }
+  .panel {
+    border-left: 1px solid var(--line);
+    background: var(--panel);
+    overflow-y: auto;
+    padding: 22px 22px 28px;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    min-height: 0;
+  }
+  h1 {
+    font-family: Fraunces, "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+    font-style: italic;
+    font-weight: 300;
+    font-size: 44px;
+    line-height: 0.95;
+    margin: 0;
+    letter-spacing: -0.015em;
+    color: var(--ink);
+  }
+  .sub { color: var(--ink-dim); margin: 10px 0 0; max-width: 36ch; }
+
+  .camera { display: grid; gap: 6px; }
+  .camera canvas {
+    width: 100%;
+    aspect-ratio: 16 / 9;
+    display: block;
+    image-rendering: pixelated;
+    border: 1px solid var(--line);
+    background: #000;
+  }
+  small { color: var(--ink-faint); font-size: 11px; }
+
+  .hashes { display: grid; gap: 8px; }
+  .hash-now {
+    font-size: 15px;
+    font-weight: 500;
+    line-height: 1.5;
+    word-break: break-all;
+    color: var(--ink);
+    min-height: 3em;
+  }
+  .hash-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+
+  .readouts { display: grid; gap: 4px; font-variant-numeric: tabular-nums; }
+  .readouts div { display: flex; justify-content: space-between; gap: 12px; border-bottom: 1px dotted var(--line-soft); padding: 3px 0; }
+  .readouts span:first-child { color: var(--ink-dim); }
+
+  .controls { display: grid; gap: 12px; }
+  .controls label { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--ink-dim); }
+  .controls label span:last-child { color: var(--ink); font-variant-numeric: tabular-nums; min-width: 4ch; text-align: right; }
+  .controls input[type=range] { flex: 1; accent-color: var(--wax); }
+  .controls input[type=checkbox] { accent-color: var(--wax); width: 15px; height: 15px; margin: 0; }
+  .toggles { display: flex; gap: 18px; }
+  .toggles label { justify-content: flex-start; gap: 8px; }
+  button {
+    font: inherit;
+    color: var(--ink);
+    background: transparent;
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    padding: 6px 12px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  button:hover { border-color: var(--ink-dim); }
+  button:focus-visible, input:focus-visible { outline: 2px solid var(--wax); outline-offset: 2px; }
+
+  .about { color: var(--ink-dim); font-size: 11.5px; line-height: 1.55; margin: 0; }
+  .about p { margin: 0 0 8px; }
+  .about p:last-child { margin: 0; color: var(--ink-faint); }
+
+  @media (max-width: 860px) {
+    .app { grid-template-columns: minmax(0, 1fr); grid-template-rows: 58vh minmax(0, 1fr); }
+    .panel { border-left: 0; border-top: 1px solid var(--line); }
+    h1 { font-size: 34px; }
+  }
+</style>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs><filter id="goo"><feGaussianBlur in="SourceGraphic" stdDeviation="2.2" result="blur"/><feColorMatrix in="blur" type="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 22 -10"/></filter></defs></svg>
+<div class="app">
+  <div class="wall"><canvas id="wall" aria-label="A wall of twelve lava lamps on shelves, each drawn as a simplicial complex with its persistence barcode, and an LED sign scrolling hashes"></canvas></div>
+  <aside class="panel">
+    <header>
+      <h1>Lava Hash</h1>
+      <p class="sub">Twelve lava lamps on two shelves, a small cousin of the hundred-lamp wall in Cloudflare's lobby. The wax is a simplicial complex. The wall photographs itself and hashes the picture.</p>
+    </header>
+
+    <section class="camera">
+      <canvas id="cam" width="96" height="54" aria-label="What the camera sees"></canvas>
+      <small>What the camera sees: the shelves, never the sign. 96 by 54 pixels, one photo every half second.</small>
+    </section>
+
+    <section class="hashes">
+      <div class="hash-now" id="hashNow">warming up</div>
+      <div class="hash-row">
+        <small>SHA-256 of the pool after the latest photo.</small>
+        <button id="copy" type="button">Copy hash</button>
+      </div>
+    </section>
+
+    <section class="readouts" aria-live="off">
+      <div><span>Photos taken</span><span id="stPhotos">0</span></div>
+      <div><span>Bytes absorbed</span><span id="stBytes">0</span></div>
+      <div><span>Components, β₀, whole wall</span><span id="stB0">0</span></div>
+      <div><span>Holes, β₁, whole wall</span><span id="stB1">0</span></div>
+      <div><span>Topology per frame</span><span id="stMs">0 ms</span></div>
+    </section>
+
+    <section class="controls">
+      <label><span>Scale ε</span><input id="eps" type="range" min="0.08" max="0.32" step="0.005" value="0.17"><span id="epsVal">0.170</span></label>
+      <div class="toggles">
+        <label><input id="breathe" type="checkbox" checked><span>Breathe</span></label>
+        <label><input id="skel" type="checkbox" checked><span>Skeleton</span></label>
+      </div>
+      <div class="toggles">
+        <button id="pause" type="button">Pause</button>
+      </div>
+    </section>
+
+    <div class="about">
+      <p>Each lamp holds 30 beads of wax. Two beads that overlap are joined by an edge, three that all overlap fill a triangle. That is a Vietoris–Rips complex at scale ε. The bulb heats the wax at the bottom until a clump breaks off and rises, cools at the top, and sinks to be heated again.</p>
+      <p>Persistent homology follows every component and every hole across all scales. The label under each lamp is its barcode, dim bars for components, bright bars for holes, with the tick at ε. Click a lamp to heat it.</p>
+      <p>Every half second a camera photographs the wall, and the photo, the barcodes, frame timing and your mouse are stirred into a SHA-256 pool. The sign under the shelves scrolls what comes out. Toy, not a CSPRNG.</p>
+    </div>
+  </aside>
+</div>
+
+<script>
+(() => {
+  'use strict';
+  const TAU = Math.PI * 2;
+  const $ = (s) => document.querySelector(s);
+  const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+
+  // ---------- SHA-256 (pure JS: synchronous, works on plain http too) ----------
+  const K = new Int32Array([
+    0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+    0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+    0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+    0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+    0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+    0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+    0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+    0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2]);
+  const W64 = new Int32Array(64);
+  function sha256(msg) {
+    const l = msg.length;
+    const padLen = ((l + 9 + 63) >> 6) << 6;
+    const m = new Uint8Array(padLen);
+    m.set(msg); m[l] = 0x80;
+    const dv = new DataView(m.buffer);
+    dv.setUint32(padLen - 4, (l * 8) >>> 0);
+    dv.setUint32(padLen - 8, Math.floor(l / 536870912));
+    let h0=0x6a09e667,h1=0xbb67ae85,h2=0x3c6ef372,h3=0xa54ff53a,h4=0x510e527f,h5=0x9b05688c,h6=0x1f83d9ab,h7=0x5be0cd19;
+    const w = W64;
+    for (let off = 0; off < padLen; off += 64) {
+      for (let i = 0; i < 16; i++) w[i] = dv.getInt32(off + i * 4);
+      for (let i = 16; i < 64; i++) {
+        const x = w[i-15], y = w[i-2];
+        const s0 = ((x>>>7)|(x<<25)) ^ ((x>>>18)|(x<<14)) ^ (x>>>3);
+        const s1 = ((y>>>17)|(y<<15)) ^ ((y>>>19)|(y<<13)) ^ (y>>>10);
+        w[i] = (w[i-16] + s0 + w[i-7] + s1) | 0;
+      }
+      let a=h0,b=h1,c=h2,d=h3,e=h4,f=h5,g=h6,h=h7;
+      for (let i = 0; i < 64; i++) {
+        const S1 = ((e>>>6)|(e<<26)) ^ ((e>>>11)|(e<<21)) ^ ((e>>>25)|(e<<7));
+        const ch = (e & f) ^ (~e & g);
+        const t1 = (h + S1 + ch + K[i] + w[i]) | 0;
+        const S0 = ((a>>>2)|(a<<30)) ^ ((a>>>13)|(a<<19)) ^ ((a>>>22)|(a<<10));
+        const maj = (a & b) ^ (a & c) ^ (b & c);
+        const t2 = (S0 + maj) | 0;
+        h=g; g=f; f=e; e=(d+t1)|0; d=c; c=b; b=a; a=(t1+t2)|0;
+      }
+      h0=(h0+a)|0; h1=(h1+b)|0; h2=(h2+c)|0; h3=(h3+d)|0; h4=(h4+e)|0; h5=(h5+f)|0; h6=(h6+g)|0; h7=(h7+h)|0;
+    }
+    const out = new Uint8Array(32), ov = new DataView(out.buffer);
+    [h0,h1,h2,h3,h4,h5,h6,h7].forEach((v, i) => ov.setUint32(i * 4, v >>> 0));
+    return out;
+  }
+  const hex = (u8) => Array.from(u8, (b) => b.toString(16).padStart(2, '0')).join('');
+
+  // ---------- seeded randomness ----------
+  function seed32() { const a = new Uint32Array(1); crypto.getRandomValues(a); return a[0]; }
+  function mulberry32(a) {
+    return function () {
+      a |= 0; a = (a + 0x6D2B79F5) | 0;
+      let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  // ---------- byte sink for the entropy pool ----------
+  class ByteSink {
+    constructor() { this.buf = new Uint8Array(1 << 16); this.n = 0; }
+    push(b) {
+      if (this.n >= this.buf.length) { const nb = new Uint8Array(this.buf.length * 2); nb.set(this.buf); this.buf = nb; }
+      this.buf[this.n++] = b & 255;
+    }
+    u16(v) { this.push(v); this.push(v >> 8); }
+    f64(v) { const b = new Uint8Array(new Float64Array([v]).buffer); for (let i = 0; i < 8; i++) this.push(b[i]); }
+    view() { return this.buf.subarray(0, this.n); }
+    reset() { this.n = 0; }
+  }
+
+  // ---------- palettes: a bulb colour, the liquid it shines through, and wax that fights it ----------
+  const rgb = (h) => [parseInt(h.slice(1,3),16), parseInt(h.slice(3,5),16), parseInt(h.slice(5,7),16)];
+  const lerp3 = (a, b, t) => [a[0]+(b[0]-a[0])*t, a[1]+(b[1]-a[1])*t, a[2]+(b[2]-a[2])*t];
+  const css = (c) => `rgb(${Math.round(c[0])},${Math.round(c[1])},${Math.round(c[2])})`;
+  const cssA = (c, a) => `rgba(${Math.round(c[0])},${Math.round(c[1])},${Math.round(c[2])},${a})`;
+  const BLACK = [0, 0, 0], WHITE = [255, 255, 255];
+  const PALETTES = [
+    { liquid: '#6a35c8', light: '#ffc23a', wax: '#ff6a1a' },   // purple liquid, orange wax
+    { liquid: '#2a6fe0', light: '#b9ff5a', wax: '#1fd873' },   // blue liquid, green wax
+    { liquid: '#ff4fa8', light: '#fff07a', wax: '#ffd21e' },   // pink liquid, yellow wax
+    { liquid: '#a6e22e', light: '#f8ff9a', wax: '#8a3cff' },   // lime liquid, purple wax
+    { liquid: '#19b8b0', light: '#b2fff2', wax: '#ff2fa8' },   // teal liquid, magenta wax
+    { liquid: '#ffc21a', light: '#fff5b0', wax: '#ff2a2a' },   // yellow liquid, red wax
+  ].map((p) => {
+    const liquid = rgb(p.liquid), light = rgb(p.light), wax = rgb(p.wax);
+    return {
+      liquid, light, wax,
+      liquidTop: lerp3(liquid, BLACK, 0.5),
+      liquidLit: lerp3(liquid, light, 0.5),
+      waxDark: lerp3(wax, BLACK, 0.35),
+      waxLit: lerp3(lerp3(wax, light, 0.35), WHITE, 0.2),
+    };
+  });
+
+  // ---------- the classic lamp silhouette, in units of the glass's widest point ----------
+  const LAMP = { capH: 0.40, capTopW: 0.44, capBotW: 0.58, glassH: 1.72, glassTopW: 0.58, glassBotW: 1.0, baseUpH: 0.66, waistW: 0.44, baseLoH: 0.90, baseBotW: 1.20 };
+  const A = LAMP.glassH;
+  const LAMP_H = LAMP.capH + LAMP.glassH + LAMP.baseUpH + LAMP.baseLoH;
+  const LABEL_H = 0.78;     // room under the shelf for the barcode and Betti numbers
+  const halfWidth = (y) => (LAMP.glassTopW + (LAMP.glassBotW - LAMP.glassTopW) * clamp(y / A, 0, 1)) / 2;
+
+  const N_PTS = 30;
+  const RMAX = 0.42;        // filtration extent
+  const MARGIN = 0.05;
+
+  class Lamp {
+    constructor(idx, pal, rand) {
+      this.idx = idx; this.pal = pal; this.rand = rand;
+      this.pts = [];
+      for (let i = 0; i < N_PTS; i++) {
+        const y = 0.1 + (A - 0.2) * rand();
+        const hw = halfWidth(y) - MARGIN;
+        this.pts.push({ x: 0.5 + (rand() * 2 - 1) * hw, y, vx: 0, vy: 0, ax: 0, ay: 0, T: rand() * 0.4, ph: rand() * TAU, cap: 1 + (rand() - 0.5) * 0.6 });
+      }
+      this.edges = []; this.tris = []; this.pairs = [];
+      this.heat = 0;
+      this.geo = null;
+    }
+
+    kick() {
+      this.heat = 1.2;
+      for (const p of this.pts) { p.vx += (this.rand() - 0.5) * 0.4; p.vy += (this.rand() - 0.5) * 0.4; }
+    }
+
+    // Convection: the bulb heats wax in the bottom of the glass, everything else cools,
+    // the top fastest. Warm wax is buoyant, cool wax sinks. Cohesion makes clumps travel together.
+    step(dt, t) {
+      const P = this.pts, n = P.length, rand = this.rand;
+      for (const p of P) {
+        const bulb = clamp(1 - (A - p.y) / 0.42, 0, 1);              // 1 right over the bulb, 0 above the zone
+        const height = 1 - clamp(p.y / A, 0, 1);                       // 1 at the top of the glass
+        p.T += (0.32 * bulb * bulb * p.cap - 0.07 * (0.35 + 0.65 * height) / p.cap + this.heat) * dt;
+        p.T = clamp(p.T, 0, 1.25);
+        p.ax = 0.05 * Math.sin(t * 0.5 + p.ph) + (rand() - 0.5) * 0.08;
+        p.ay = -0.55 * (p.T - 0.5) + (rand() - 0.5) * 0.08;
+      }
+      // surface tension: beads repel when overlapping, and pull together when near
+      // and at a similar temperature, so a warm clump can leave a cool pool behind
+      const rr = 0.11, reach = rr * 2.0;
+      for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) {
+        const dx = P[j].x - P[i].x, dy = P[j].y - P[i].y;
+        const d2 = dx * dx + dy * dy;
+        if (d2 > reach * reach || d2 < 1e-9) continue;
+        const d = Math.sqrt(d2);
+        let f;
+        if (d < rr) f = -(rr - d) / rr * 1.4;
+        else {
+          const sim = Math.max(0, 1 - Math.abs(P[i].T - P[j].T) / 0.3);
+          f = 0.22 * sim * Math.sin(Math.PI * (d - rr) / (reach - rr));
+        }
+        const nx = dx / d * f, ny = dy / d * f;
+        P[i].ax += nx; P[i].ay += ny;
+        P[j].ax -= nx; P[j].ay -= ny;
+      }
+      const damp = Math.exp(-1.8 * dt);
+      for (const p of P) {
+        p.vx = (p.vx + p.ax * dt) * damp;
+        p.vy = (p.vy + p.ay * dt) * damp;
+        p.x += p.vx * dt; p.y += p.vy * dt;
+        if (p.y < MARGIN) { p.y = MARGIN; p.vy = Math.abs(p.vy) * 0.3; }
+        if (p.y > A - MARGIN) { p.y = A - MARGIN; p.vy = -Math.abs(p.vy) * 0.3; }
+        const hw = halfWidth(p.y) - MARGIN;
+        if (p.x < 0.5 - hw) { p.x = 0.5 - hw; p.vx = Math.abs(p.vx) * 0.4; }
+        if (p.x > 0.5 + hw) { p.x = 0.5 + hw; p.vx = -Math.abs(p.vx) * 0.4; }
+      }
+      this.heat *= Math.exp(-1.2 * dt);
+    }
+
+    // Persistent homology of the Vietoris–Rips filtration up to RMAX, dims 0 and 1.
+    computePH() {
+      const P = this.pts, n = P.length;
+      const edges = [];
+      for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) {
+        const dx = P[j].x - P[i].x, dy = P[j].y - P[i].y;
+        const d = Math.sqrt(dx * dx + dy * dy);
+        if (d <= RMAX) edges.push({ i, j, d });
+      }
+      edges.sort((a, b) => a.d - b.d);
+      const E = edges.length;
+      const eidx = new Int32Array(n * n).fill(-1);
+      edges.forEach((e, k) => { eidx[e.i * n + e.j] = k; eidx[e.j * n + e.i] = k; });
+
+      const parent = new Int32Array(n); for (let i = 0; i < n; i++) parent[i] = i;
+      const find = (a) => { while (parent[a] !== a) { parent[a] = parent[parent[a]]; a = parent[a]; } return a; };
+      const positive = new Uint8Array(E);
+      const pairs = [];
+      let components = n;
+      for (let k = 0; k < E; k++) {
+        const e = edges[k], ra = find(e.i), rb = find(e.j);
+        if (ra !== rb) { parent[ra] = rb; components--; pairs.push({ dim: 0, b: 0, d: e.d }); }
+        else positive[k] = 1;
+      }
+      // whatever is still apart at RMAX never merges: one infinite bar per component
+      for (let c = 0; c < components; c++) pairs.push({ dim: 0, b: 0, d: Infinity });
+
+      const tris = [];
+      for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) {
+        const a = eidx[i * n + j]; if (a < 0) continue;
+        for (let k = j + 1; k < n; k++) {
+          const b = eidx[j * n + k], c = eidx[i * n + k];
+          if (b < 0 || c < 0) continue;
+          const f = [a, b, c].sort((x, y) => x - y);
+          tris.push({ i, j, k, d: edges[f[2]].d, f });
+        }
+      }
+      tris.sort((a, b) => a.d - b.d);
+
+      const pivot = new Int32Array(E).fill(-1);
+      const cols = [];
+      const killed = new Uint8Array(E);
+      for (const t of tris) {
+        let col = t.f;
+        for (;;) {
+          if (!col.length) break;
+          const p = pivot[col[col.length - 1]];
+          if (p < 0) break;
+          col = symdiff(col, cols[p]);
+        }
+        if (col.length) {
+          const low = col[col.length - 1];
+          pivot[low] = cols.length;
+          killed[low] = 1;
+          if (t.d - edges[low].d > 1e-6) pairs.push({ dim: 1, b: edges[low].d, d: t.d });
+        }
+        cols.push(col);
+      }
+      for (let k = 0; k < E; k++) if (positive[k] && !killed[k]) pairs.push({ dim: 1, b: edges[k].d, d: Infinity });
+
+      this.edges = edges; this.tris = tris; this.pairs = pairs;
+    }
+
+    betti(eps) {
+      let b0 = 0, b1 = 0;
+      for (const p of this.pairs) if (p.b <= eps && eps < p.d) { if (p.dim === 0) b0++; else b1++; }
+      return [b0, b1];
+    }
+
+    serialize(sink) {
+      sink.push(this.idx);
+      for (const p of this.pairs) {
+        sink.push(p.dim);
+        sink.u16(Math.min(65535, Math.round(p.b * 30000)));
+        sink.u16(p.d === Infinity ? 65535 : Math.min(65535, Math.round(p.d * 30000)));
+      }
+    }
+  }
+
+  function symdiff(a, b) {
+    const out = [];
+    let i = 0, j = 0;
+    while (i < a.length && j < b.length) {
+      if (a[i] < b[j]) out.push(a[i++]);
+      else if (a[i] > b[j]) out.push(b[j++]);
+      else { i++; j++; }
+    }
+    while (i < a.length) out.push(a[i++]);
+    while (j < b.length) out.push(b[j++]);
+    return out;
+  }
+
+  // ---------- lamp geometry and cached drawing resources ----------
+  // geo: cx = centre x, gy = top of glass, s = pixels per unit (glass max width)
+  function makeGeo(cx, gy, s) {
+    const g = { cx, gy, s, x0: cx - s / 2, gh: A * s };
+    const tw = LAMP.glassTopW / 2 * s, bw = LAMP.glassBotW / 2 * s, gh = A * s, rb = 0.07 * s;
+    const path = new Path2D();
+    path.moveTo(cx - tw, gy);
+    path.lineTo(cx + tw, gy);
+    path.lineTo(cx + bw, gy + gh - rb * 2.2);
+    path.arcTo(cx + bw, gy + gh, cx, gy + gh, rb);
+    path.lineTo(cx - bw + rb, gy + gh);
+    path.arcTo(cx - bw, gy + gh, cx - bw, gy + gh - rb * 2.2, rb);
+    path.closePath();
+    g.glass = path;
+    // an offscreen layer the size of the glass, for lighting the wax through a mask
+    g.layer = document.createElement('canvas');
+    g.layer.width = Math.max(1, Math.ceil(s * dpr)); g.layer.height = Math.max(1, Math.ceil(gh * dpr));
+    g.lctx = g.layer.getContext('2d');
+    return g;
+  }
+
+  function metalGradient(ctx, x0, x1) {
+    const gr = ctx.createLinearGradient(x0, 0, x1, 0);
+    gr.addColorStop(0, '#5a5a63'); gr.addColorStop(0.28, '#d8d8de'); gr.addColorStop(0.5, '#a9a9b2');
+    gr.addColorStop(0.75, '#e6e6ea'); gr.addColorStop(1, '#3a3a42');
+    return gr;
+  }
+
+  // Cap, base, and the light the bulb throws on the wall, the shelf and the metal. Static: drawn once.
+  function drawHardware(ctx, geo, pal) {
+    const { cx, gy, s, gh } = geo;
+    const light = pal.light;
+
+    // cap: metal far from the bulb, in half shadow, catching a little of the lamp's colour from below
+    let w0 = LAMP.capTopW / 2 * s, w1 = LAMP.capBotW / 2 * s;
+    const capGr = ctx.createLinearGradient(cx - w1, 0, cx + w1, 0);
+    capGr.addColorStop(0, '#34343b'); capGr.addColorStop(0.3, '#8a8a93'); capGr.addColorStop(0.5, '#66666e');
+    capGr.addColorStop(0.75, '#94949c'); capGr.addColorStop(1, '#27272d');
+    ctx.fillStyle = capGr;
+    ctx.beginPath();
+    ctx.moveTo(cx - w0, gy - LAMP.capH * s); ctx.lineTo(cx + w0, gy - LAMP.capH * s);
+    ctx.lineTo(cx + w1, gy); ctx.lineTo(cx - w1, gy); ctx.closePath(); ctx.fill();
+    ctx.globalCompositeOperation = 'lighter';
+    let warm = ctx.createLinearGradient(0, gy, 0, gy - LAMP.capH * s);
+    warm.addColorStop(0, cssA(pal.liquidLit, 0.22)); warm.addColorStop(1, cssA(pal.liquidLit, 0.04));
+    ctx.fillStyle = warm;
+    ctx.beginPath();
+    ctx.moveTo(cx - w0, gy - LAMP.capH * s); ctx.lineTo(cx + w0, gy - LAMP.capH * s);
+    ctx.lineTo(cx + w1, gy); ctx.lineTo(cx - w1, gy); ctx.closePath(); ctx.fill();
+    ctx.globalCompositeOperation = 'source-over';
+
+    // upper base: inverted cone to the waist
+    const y0 = gy + gh, y1 = y0 + LAMP.baseUpH * s, y2 = y1 + LAMP.baseLoH * s;
+    w0 = LAMP.glassBotW / 2 * s; w1 = LAMP.waistW / 2 * s; const w2 = LAMP.baseBotW / 2 * s;
+    ctx.fillStyle = metalGradient(ctx, cx - w0, cx + w0);
+    ctx.beginPath();
+    ctx.moveTo(cx - w0, y0); ctx.lineTo(cx + w0, y0); ctx.lineTo(cx + w1, y1); ctx.lineTo(cx - w1, y1); ctx.closePath(); ctx.fill();
+    // lower base: cone to the foot
+    ctx.fillStyle = metalGradient(ctx, cx - w2, cx + w2);
+    ctx.beginPath();
+    ctx.moveTo(cx - w1, y1 + 1); ctx.lineTo(cx + w1, y1 + 1); ctx.lineTo(cx + w2, y2); ctx.lineTo(cx - w2, y2); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = 'rgba(0,0,0,0.45)';
+    ctx.fillRect(cx - w1, y1 - 0.5, w1 * 2, Math.max(1, s * 0.02));
+    // the bulb's light leaking through the top of the base
+    ctx.globalCompositeOperation = 'lighter';
+    warm = ctx.createLinearGradient(0, y0, 0, y1);
+    warm.addColorStop(0, cssA(light, 0.55)); warm.addColorStop(1, cssA(light, 0));
+    ctx.fillStyle = warm;
+    ctx.beginPath();
+    ctx.moveTo(cx - w0, y0); ctx.lineTo(cx + w0, y0); ctx.lineTo(cx + w1, y1); ctx.lineTo(cx - w1, y1); ctx.closePath(); ctx.fill();
+    ctx.globalCompositeOperation = 'source-over';
+  }
+
+  // The light the lamp throws on the wall: its own silhouette, blurred. The whole column glows
+  // because the liquid scatters the bulb's light, with a little extra near the bulb.
+  function drawGlow(ctx, geo, pal) {
+    const { cx, gy, s, gh } = geo;
+    const lit = pal.liquidLit;
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.filter = `blur(${(s * 1.1).toFixed(1)}px)`;
+    ctx.fillStyle = cssA(lit, 0.30);
+    ctx.fill(geo.glass);
+    ctx.filter = `blur(${(s * 0.4).toFixed(1)}px)`;
+    ctx.fillStyle = cssA(lit, 0.16);
+    ctx.fill(geo.glass);
+    ctx.filter = `blur(${(s * 0.6).toFixed(1)}px)`;
+    ctx.fillStyle = cssA(pal.light, 0.10);
+    ctx.beginPath(); ctx.ellipse(cx, gy + gh * 0.95, s * 0.7, s * 0.45, 0, 0, TAU); ctx.fill();
+    ctx.restore();
+  }
+
+  // On the shelf plank: a soft pool of light around the foot and the foot's shadow.
+  function drawShelfLight(ctx, geo, pal, shelfY, shelfT) {
+    const { cx, gy, s, gh } = geo;
+    const footW = LAMP.baseBotW / 2 * s;
+    ctx.save();
+    ctx.beginPath(); ctx.rect(0, shelfY, W, shelfT); ctx.clip();
+    ctx.filter = `blur(${(s * 0.35).toFixed(1)}px)`;
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.fillStyle = cssA(pal.liquidLit, 0.32);
+    ctx.beginPath(); ctx.ellipse(cx, shelfY + shelfT * 0.5, s * 1.1, shelfT * 1.6, 0, 0, TAU); ctx.fill();
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.filter = `blur(${(s * 0.12).toFixed(1)}px)`;
+    ctx.fillStyle = 'rgba(0,0,0,0.5)';
+    ctx.beginPath(); ctx.ellipse(cx, shelfY + shelfT * 0.3, footW * 1.05, shelfT * 0.8, 0, 0, TAU); ctx.fill();
+    ctx.restore();
+  }
+
+  // The glass and everything inside it. Per frame.
+  function drawGlass(ctx, lamp, geo, eps, showSkel) {
+    const { cx, gy, s, gh, x0 } = geo;
+    const pal = lamp.pal;
+    ctx.save();
+    ctx.clip(geo.glass);
+    // the liquid, lit from the bulb below
+    // the liquid is a tint you can see the wall through; what makes it bright is the bulb shining up into it
+    let gr = ctx.createLinearGradient(0, gy, 0, gy + gh);
+    gr.addColorStop(0, cssA(pal.liquid, 0.42)); gr.addColorStop(1, cssA(pal.liquid, 0.62));
+    ctx.fillStyle = gr; ctx.fillRect(x0, gy, s, gh);
+    ctx.globalCompositeOperation = 'lighter';
+    gr = ctx.createRadialGradient(cx, gy + gh, 0, cx, gy + gh, s * 1.5);
+    gr.addColorStop(0, cssA(pal.light, 0.9)); gr.addColorStop(0.18, cssA(pal.liquidLit, 0.7));
+    gr.addColorStop(0.5, cssA(pal.liquidLit, 0.22)); gr.addColorStop(1, cssA(pal.liquidLit, 0));
+    ctx.fillStyle = gr; ctx.fillRect(x0, gy, s, gh);
+    // scattered light climbing the column
+    gr = ctx.createLinearGradient(0, gy + gh, 0, gy);
+    gr.addColorStop(0, cssA(pal.liquidLit, 0.22)); gr.addColorStop(0.6, cssA(pal.liquidLit, 0.1)); gr.addColorStop(1, cssA(pal.liquidLit, 0.05));
+    ctx.fillStyle = gr; ctx.fillRect(x0, gy, s, gh);
+    ctx.globalCompositeOperation = 'source-over';
+
+    // the wax: drawn flat and unlit into a layer, then lit through its own silhouette
+    const lc = geo.lctx, L = geo.layer;
+    lc.setTransform(dpr, 0, 0, dpr, 0, 0);
+    lc.globalCompositeOperation = 'source-over';
+    lc.clearRect(0, 0, s, gh);
+    const R = eps / 2 * s;
+    lc.fillStyle = css(pal.waxDark);
+    lc.filter = 'url(#goo)';     // blur plus alpha threshold: touching beads melt into one wax blob
+    if (showSkel) {
+      lc.beginPath();
+      for (const t of lamp.tris) {
+        if (t.d > eps) break;
+        const a = lamp.pts[t.i], b = lamp.pts[t.j], c = lamp.pts[t.k];
+        lc.moveTo(a.x * s, a.y * s); lc.lineTo(b.x * s, b.y * s); lc.lineTo(c.x * s, c.y * s); lc.closePath();
+      }
+      lc.fill();
+    }
+    lc.beginPath();
+    for (const p of lamp.pts) { const X = p.x * s, Y = p.y * s; lc.moveTo(X + R, Y); lc.arc(X, Y, R, 0, TAU); }
+    lc.fill();
+    lc.filter = 'none';
+    if (showSkel) {
+      // seams between facets of the wax
+      lc.strokeStyle = 'rgba(0,0,0,0.28)';
+      lc.lineWidth = Math.max(0.7, s * 0.01);
+      lc.beginPath();
+      for (const e of lamp.edges) {
+        if (e.d > eps) break;
+        const a = lamp.pts[e.i], b = lamp.pts[e.j];
+        lc.moveTo(a.x * s, a.y * s); lc.lineTo(b.x * s, b.y * s);
+      }
+      lc.stroke();
+    }
+    // light from the bulb, only where there is wax: a broad wash, then each bead's underside
+    lc.globalCompositeOperation = 'source-atop';
+    gr = lc.createRadialGradient(s / 2, gh, 0, s / 2, gh, s * 1.4);
+    gr.addColorStop(0, cssA(pal.waxLit, 0.95)); gr.addColorStop(0.3, cssA(pal.waxLit, 0.6));
+    gr.addColorStop(0.7, cssA(pal.waxLit, 0.12)); gr.addColorStop(1, cssA(pal.waxLit, 0));
+    lc.fillStyle = gr; lc.fillRect(0, 0, s, gh);
+    for (const p of lamp.pts) {
+      const X = p.x * s, Y = p.y * s;
+      const dist = Math.hypot(X - s / 2, Y - gh);
+      const lit = clamp(1 - dist / (s * 1.7), 0.08, 1);
+      gr = lc.createRadialGradient(X, Y + R * 0.45, 0, X, Y + R * 0.45, R * 1.35);
+      gr.addColorStop(0, cssA(pal.waxLit, 0.55 * lit)); gr.addColorStop(1, cssA(pal.waxLit, 0));
+      lc.fillStyle = gr; lc.fillRect(X - R * 1.4, Y - R, R * 2.8, R * 2.4);
+      gr = lc.createRadialGradient(X - R * 0.3, Y - R * 0.4, 0, X - R * 0.3, Y - R * 0.4, R * 0.55);
+      gr.addColorStop(0, 'rgba(255,255,255,0.16)'); gr.addColorStop(1, 'rgba(255,255,255,0)');
+      lc.fillStyle = gr; lc.fillRect(X - R, Y - R, R * 1.6, R * 1.2);
+    }
+    // wax far from the bulb sits in its own shadow
+    gr = lc.createLinearGradient(0, gh, 0, 0);
+    gr.addColorStop(0, 'rgba(0,0,0,0)'); gr.addColorStop(0.5, 'rgba(0,0,0,0.14)'); gr.addColorStop(1, 'rgba(0,0,0,0.42)');
+    lc.fillStyle = gr; lc.fillRect(0, 0, s, gh);
+    ctx.drawImage(L, x0, gy, s, gh);
+
+    // glass: a bright edge on the left, a softer one on the right, a shadow toward the edges
+    gr = ctx.createLinearGradient(x0, 0, x0 + s, 0);
+    gr.addColorStop(0, 'rgba(0,0,0,0.28)');
+    gr.addColorStop(0.05, 'rgba(255,255,255,0.05)');
+    gr.addColorStop(0.11, 'rgba(255,255,255,0.22)');
+    gr.addColorStop(0.16, 'rgba(255,255,255,0.20)');
+    gr.addColorStop(0.26, 'rgba(255,255,255,0.02)');
+    gr.addColorStop(0.72, 'rgba(0,0,0,0)');
+    gr.addColorStop(0.9, 'rgba(255,255,255,0.09)');
+    gr.addColorStop(0.97, 'rgba(255,255,255,0.03)');
+    gr.addColorStop(1, 'rgba(0,0,0,0.35)');
+    ctx.fillStyle = gr; ctx.fillRect(x0, gy, s, gh);
+    // the glass rim catches the bulb's colour
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.lineWidth = Math.max(1.5, s * 0.03);
+    ctx.strokeStyle = cssA(pal.liquidLit, 0.35);
+    ctx.stroke(geo.glass);
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.restore();
+    ctx.strokeStyle = 'rgba(255,255,255,0.18)'; ctx.lineWidth = 1; ctx.stroke(geo.glass);
+  }
+
+  function drawLabel(ctx, lamp, eps) {
+    const { cx, s, label } = lamp.geo;
+    const { x, y, w, h, font } = label;
+    const pal = lamp.pal;
+    const shown = lamp.pairs.filter((p) => p.d - p.b > 0.008);
+    shown.sort((a, b) => (a.dim - b.dim) || (a.b - b.b) || (b.d - a.d));
+    const rowH = Math.min(3, h / Math.max(1, shown.length));
+    const barH = Math.max(0.8, rowH * 0.7);
+    const xOf = (v) => x + Math.min(1, v / RMAX) * w;
+    ctx.fillStyle = 'rgba(255,255,255,0.05)';
+    ctx.fillRect(x, y, w, h);
+    shown.forEach((p, r) => {
+      const yy = y + r * rowH;
+      const x0 = xOf(p.b), x1 = p.d === Infinity ? x + w : xOf(p.d);
+      ctx.fillStyle = p.dim === 0 ? cssA(pal.liquidLit, 0.55) : cssA(pal.light, 0.95);
+      ctx.fillRect(x0, yy, Math.max(1, x1 - x0), barH);
+    });
+    const ex = xOf(eps);
+    ctx.fillStyle = 'rgba(238,228,216,0.75)';
+    ctx.fillRect(ex - 0.5, y - 2, 1, h + 4);
+    const [b0, b1] = lamp.betti(eps);
+    ctx.fillStyle = 'rgba(160,148,171,0.95)';
+    ctx.font = font; ctx.textBaseline = 'top'; ctx.textAlign = 'center';
+    ctx.fillText(s < 70 ? `β₀ ${b0} β₁ ${b1}` : `β₀ ${b0}   β₁ ${b1}`, cx, y + h + 4);   // tighter on small lamps so neighbours' labels stay apart
+    return [b0, b1];
+  }
+
+  // ---------- LED sign: a 5×7 dot-matrix marquee ----------
+  const FONT = {
+    'A': '.###. #...# #...# ##### #...# #...# #...#', 'B': '####. #...# #...# ####. #...# #...# ####.',
+    'C': '.###. #...# #.... #.... #.... #...# .###.', 'D': '###.. #..#. #...# #...# #...# #..#. ###..',
+    'E': '##### #.... #.... ####. #.... #.... #####', 'F': '##### #.... #.... ####. #.... #.... #....',
+    '0': '.###. #...# #..## #.#.# ##..# #...# .###.', '1': '..#.. .##.. ..#.. ..#.. ..#.. ..#.. .###.',
+    '2': '.###. #...# ....# ...#. ..#.. .#... #####', '3': '##### ...#. ..#.. ...#. ....# #...# .###.',
+    '4': '...#. ..##. .#.#. #..#. ##### ...#. ...#.', '5': '##### #.... ####. ....# ....# #...# .###.',
+    '6': '..##. .#... #.... ####. #...# #...# .###.', '7': '##### ....# ...#. ..#.. .#... .#... .#...',
+    '8': '.###. #...# #...# .###. #...# #...# .###.', '9': '.###. #...# #...# .#### ....# ...#. .##..',
+  };
+  const GLYPH = {};
+  for (const ch in FONT) {
+    const rows = FONT[ch].split(' ');
+    const cols = [];
+    for (let c = 0; c < 5; c++) { let bits = 0; for (let r = 0; r < 7; r++) if (rows[r][c] === '#') bits |= 1 << r; cols.push(bits); }
+    GLYPH[ch] = cols;
+  }
+  GLYPH[' '] = [0, 0, 0];
+
+  const sign = { cols: [], head: 0, acc: 0, speed: 44, pending: null };
+  function signAppend(text) {
+    for (const ch of text.toUpperCase()) { const g = GLYPH[ch] || GLYPH[' ']; for (const c of g) sign.cols.push(c); sign.cols.push(0); }
+  }
+  function signStep(dt, visible) {
+    sign.acc += dt * sign.speed;
+    const n = Math.floor(sign.acc);
+    if (n > 0) { sign.acc -= n; sign.head += n; }
+    while (sign.cols.length - sign.head < visible * 1.5) {
+      if (sign.pending) { signAppend(sign.pending); sign.pending = null; }
+      else signAppend('      ');
+    }
+    if (sign.head > 4000) { sign.cols = sign.cols.slice(sign.head); sign.head = 0; }
+  }
+  const ledOn = document.createElement('canvas'); ledOn.width = ledOn.height = 32;
+  {
+    const c = ledOn.getContext('2d');
+    const gr = c.createRadialGradient(16, 16, 1, 16, 16, 16);
+    gr.addColorStop(0, '#fff1d6'); gr.addColorStop(0.3, '#ff6a2a'); gr.addColorStop(0.55, 'rgba(255,60,20,0.45)'); gr.addColorStop(1, 'rgba(255,40,10,0)');
+    c.fillStyle = gr; c.fillRect(0, 0, 32, 32);
+  }
+
+  // ---------- wall ----------
+  const canvas = $('#wall');
+  const ctx = canvas.getContext('2d');
+  const wallEl = canvas.parentElement;
+  const bg = document.createElement('canvas');
+  const bgCtx = bg.getContext('2d');
+  let W = 0, H = 0, dpr = 1;
+  const LAMPS = 12;
+  const lamps = [];
+  const masterRand = mulberry32(seed32());
+  const grid = { cols: 6, rows: 2, cellW: 0, rowH: 0, top: 0, ha: 0, shelfT: 0 };
+  const led = { h: 0, pitch: 0, x0: 0, y0: 0, visible: 0 };
+
+  for (let i = 0; i < LAMPS; i++) {
+    let pal;
+    do { pal = PALETTES[Math.floor(masterRand() * PALETTES.length)]; }
+    while (i > 0 && pal === lamps[i - 1].pal);
+    lamps.push(new Lamp(i, pal, mulberry32(seed32())));
+  }
+
+  function layout() {
+    dpr = Math.min(2, window.devicePixelRatio || 1);
+    W = wallEl.clientWidth; H = wallEl.clientHeight;
+    canvas.width = bg.width = Math.round(W * dpr); canvas.height = bg.height = Math.round(H * dpr);
+
+    led.h = clamp(Math.round(H * 0.055), 30, 54);
+    led.pitch = Math.max(3, Math.floor((led.h - 12) / 7));
+    led.x0 = 10; led.y0 = H - led.h + Math.round((led.h - 7 * led.pitch) / 2);
+    led.visible = Math.floor((W - 20) / led.pitch);
+
+    const ha = H - led.h - 6;
+    let best = { unit: 0, rows: 2 };
+    for (const r of [2, 3, 4, 6]) {
+      const c = Math.ceil(LAMPS / r);
+      const unit = Math.min((W / c) / 1.28, (ha / r) / (LAMP_H + LABEL_H + 0.2));
+      if (unit > best.unit) best = { unit, rows: r };
+    }
+    grid.rows = best.rows; grid.cols = Math.ceil(LAMPS / grid.rows);
+    grid.cellW = W / grid.cols; grid.rowH = ha / grid.rows; grid.top = 4; grid.ha = ha;
+    const s = best.unit;
+    const shelfT = Math.max(3, Math.round(s * 0.13));
+    grid.shelfT = shelfT;
+    const font = `${clamp(s * 0.1, 9, 13).toFixed(1)}px "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace`;
+    lamps.forEach((lamp, i) => {
+      const c = i % grid.cols, r = Math.floor(i / grid.cols);
+      const cx = (c + 0.5) * grid.cellW;
+      const shelfY = grid.top + (r + 1) * grid.rowH - shelfT - LABEL_H * s;
+      const gy = shelfY - (LAMP.baseLoH + LAMP.baseUpH + A) * s;
+      lamp.geo = makeGeo(cx, gy, s);
+      lamp.geo.shelfY = shelfY;
+      lamp.geo.label = { x: cx - s * 0.5, y: shelfY + shelfT + s * 0.1, w: s, h: s * 0.36, font };
+    });
+    renderBackground();
+  }
+
+  function renderBackground() {
+    const c = bgCtx;
+    c.setTransform(dpr, 0, 0, dpr, 0, 0);
+    c.fillStyle = '#120e17'; c.fillRect(0, 0, W, H);
+    const vg = c.createRadialGradient(W / 2, H * 0.4, Math.min(W, H) * 0.2, W / 2, H * 0.4, Math.max(W, H) * 0.85);
+    vg.addColorStop(0, 'rgba(255,240,220,0.03)'); vg.addColorStop(1, 'rgba(0,0,0,0)');
+    c.fillStyle = vg; c.fillRect(0, 0, W, H);
+
+    for (const lamp of lamps) drawGlow(c, lamp.geo, lamp.pal);
+
+    for (let r = 0; r < grid.rows; r++) {
+      const y = lamps[r * grid.cols].geo.shelfY;
+      const gr = c.createLinearGradient(0, y, 0, y + grid.shelfT);
+      gr.addColorStop(0, '#4a3b33'); gr.addColorStop(0.15, '#2e241f'); gr.addColorStop(1, '#1a1411');
+      c.fillStyle = gr; c.fillRect(0, y, W, grid.shelfT);
+      const sh = c.createLinearGradient(0, y + grid.shelfT, 0, y + grid.shelfT * 4);
+      sh.addColorStop(0, 'rgba(0,0,0,0.5)'); sh.addColorStop(1, 'rgba(0,0,0,0)');
+      c.fillStyle = sh; c.fillRect(0, y + grid.shelfT, W, grid.shelfT * 3);
+    }
+    for (const lamp of lamps) drawShelfLight(c, lamp.geo, lamp.pal, lamp.geo.shelfY, grid.shelfT);
+    for (const lamp of lamps) drawHardware(c, lamp.geo, lamp.pal);
+
+    // the sign's bezel and its unlit dots
+    c.fillStyle = '#06040a'; c.fillRect(0, H - led.h, W, led.h);
+    c.fillStyle = '#251c22'; c.fillRect(0, H - led.h, W, 1);
+    c.fillStyle = 'rgba(255,70,30,0.10)';
+    c.beginPath();
+    const p = led.pitch, rr = p * 0.3;
+    for (let col = 0; col < led.visible; col++) for (let row = 0; row < 7; row++) {
+      const X = led.x0 + col * p + p / 2, Y = led.y0 + row * p + p / 2;
+      c.moveTo(X + rr, Y); c.arc(X, Y, rr, 0, TAU);
+    }
+    c.fill();
+  }
+
+  function drawSign() {
+    const p = led.pitch, size = p * 1.9;
+    ctx.globalCompositeOperation = 'lighter';
+    for (let col = 0; col < led.visible; col++) {
+      const bits = sign.cols[sign.head + col] || 0;
+      if (!bits) continue;
+      for (let row = 0; row < 7; row++) if (bits & (1 << row)) {
+        ctx.drawImage(ledOn, led.x0 + col * p + p / 2 - size / 2, led.y0 + row * p + p / 2 - size / 2, size, size);
+      }
+    }
+    ctx.globalCompositeOperation = 'source-over';
+  }
+
+  // ---------- entropy pool ----------
+  const camCanvas = document.createElement('canvas');
+  camCanvas.width = 96; camCanvas.height = 54;
+  const camCtx = camCanvas.getContext('2d', { willReadFrequently: true });
+  const camView = $('#cam');
+  const camViewCtx = camView.getContext('2d');
+  let pool = crypto.getRandomValues(new Uint8Array(32));
+  const sink = new ByteSink();
+  let counter = 0;
+  const stats = { photos: 0, bytes: 0 };
+  let latest = '';
+
+  function snapshot() {
+    camCtx.drawImage(canvas, 0, 0, canvas.width, Math.round((H - led.h) * dpr), 0, 0, 96, 54);   // the shelves, never the sign
+    const px = camCtx.getImageData(0, 0, 96, 54).data;
+    camViewCtx.drawImage(camCanvas, 0, 0);
+    const chunk = sink.view();
+    const bytes = new Uint8Array(32 + chunk.length + px.length + 8);
+    bytes.set(pool, 0);
+    bytes.set(chunk, 32);
+    bytes.set(px, 32 + chunk.length);
+    new DataView(bytes.buffer).setFloat64(bytes.length - 8, performance.now());
+    pool = sha256(bytes);
+    sink.reset();
+    const outIn = new Uint8Array(40);
+    outIn.set(pool);
+    new DataView(outIn.buffer).setUint32(36, counter++);
+    const out = hex(sha256(outIn));
+    stats.photos++; stats.bytes += bytes.length - 32;
+    emit(out);
+  }
+
+  const hashNow = $('#hashNow');
+  function emit(h) {
+    latest = h;
+    hashNow.textContent = h;
+    if (!sign.pending && stats.photos === 1) sign.cols.length = sign.head + led.visible;   // first hash scrolls in right away
+    sign.pending = `      ${h}`;
+    $('#stPhotos').textContent = stats.photos.toLocaleString();
+    $('#stBytes').textContent = fmtBytes(stats.bytes);
+  }
+  function fmtBytes(n) {
+    if (n < 1e3) return `${n} B`;
+    if (n < 1e6) return `${(n / 1e3).toFixed(1)} kB`;
+    return `${(n / 1e6).toFixed(2)} MB`;
+  }
+
+  // ---------- controls ----------
+  const epsInput = $('#eps'), epsVal = $('#epsVal'), breathe = $('#breathe'), skel = $('#skel');
+  const pauseBtn = $('#pause'), copyBtn = $('#copy');
+  let paused = false;
+  const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (reduced) breathe.checked = false;
+  epsInput.addEventListener('input', () => { epsVal.textContent = (+epsInput.value).toFixed(3); });
+  pauseBtn.addEventListener('click', () => { paused = !paused; pauseBtn.textContent = paused ? 'Resume' : 'Pause'; });
+  copyBtn.addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(latest); copyBtn.textContent = 'Copied'; }
+    catch {
+      const range = document.createRange(); range.selectNodeContents(hashNow);
+      const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(range);
+      copyBtn.textContent = 'Selected';
+    }
+    setTimeout(() => { copyBtn.textContent = 'Copy hash'; }, 1400);
+  });
+  function lampAt(e) {
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left, y = e.clientY - rect.top;
+    if (y < grid.top || y > grid.top + grid.ha) return -1;
+    const c = clamp(Math.floor(x / grid.cellW), 0, grid.cols - 1);
+    const r = clamp(Math.floor((y - grid.top) / grid.rowH), 0, grid.rows - 1);
+    const i = r * grid.cols + c;
+    return i < LAMPS ? i : -1;
+  }
+  canvas.addEventListener('pointermove', (e) => {
+    sink.push(1); sink.f64(e.clientX); sink.f64(e.clientY); sink.f64(e.timeStamp);
+  });
+  canvas.addEventListener('pointerdown', (e) => {
+    const i = lampAt(e);
+    if (i >= 0) { lamps[i].kick(); sink.push(2); sink.push(i); sink.f64(e.timeStamp); }
+  });
+
+  // ---------- main loop ----------
+  let last = performance.now(), t = 0, lastShot = -Infinity, phMs = 0, phCursor = 0;
+  const speed = reduced ? 0.35 : 1;
+  const PH_PER_FRAME = Math.ceil(LAMPS / 2);
+
+  function frame(now) {
+    const dt = Math.min(0.05, (now - last) / 1000) * speed;
+    last = now;
+    const epsBase = +epsInput.value;
+    if (!paused) {
+      t += dt;
+      for (const lamp of lamps) lamp.step(dt, t);
+      const t0 = performance.now();
+      for (let k = 0; k < PH_PER_FRAME; k++) {
+        const lamp = lamps[phCursor];
+        lamp.computePH(); lamp.serialize(sink);
+        phCursor = (phCursor + 1) % LAMPS;
+      }
+      phMs = phMs * 0.9 + (performance.now() - t0) * 0.1;
+    }
+    const eps = clamp(epsBase + (breathe.checked && !paused ? 0.03 * Math.sin(t * TAU / 11) : 0), 0.08, 0.32);
+    const showSkel = skel.checked;
+
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.drawImage(bg, 0, 0);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    let B0 = 0, B1 = 0;
+    for (const lamp of lamps) {
+      drawGlass(ctx, lamp, lamp.geo, eps, showSkel);
+      const [b0, b1] = drawLabel(ctx, lamp, eps); B0 += b0; B1 += b1;
+    }
+
+    if (!paused) signStep(dt, led.visible);
+    drawSign();
+
+    sink.f64(now); sink.f64(dt);
+    $('#stB0').textContent = B0; $('#stB1').textContent = B1;
+    $('#stMs').textContent = `${phMs.toFixed(2)} ms`;
+
+    if (now - lastShot > 500) { lastShot = now; snapshot(); }
+    requestAnimationFrame(frame);
+  }
+
+  new ResizeObserver(layout).observe(wallEl);
+  layout();
+  // let the wax find its convection cycle before the first frame
+  for (let k = 0; k < 900; k++) for (const lamp of lamps) lamp.step(1 / 30, k / 30);
+  t = 30;
+  for (const lamp of lamps) lamp.computePH();
+  requestAnimationFrame(frame);
+})();
+</script>
