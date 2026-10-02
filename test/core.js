@@ -1,9 +1,9 @@
-// Pulls the math out of index.html so it can run in Node without a DOM.
+// Pulls the math out of src.html so it can run in Node without a DOM.
 // Sections are located by their "// ----------" comment headers, not line numbers.
 'use strict';
 const fs = require('fs');
 const path = require('path');
-const src = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
+const src = fs.readFileSync(path.join(__dirname, '..', 'src.html'), 'utf8');
 
 function section(startMarker, endMarker) {
   const a = src.indexOf(startMarker);

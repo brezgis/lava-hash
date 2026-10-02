@@ -22,12 +22,12 @@ This is a toy, not a CSPRNG. The pool is seeded from `crypto.getRandomValues`, w
 
 ## Running it
 
-Open `docs/index.html` in a browser. It works from a plain `file://` URL.
+Open `index.html` in a browser. It works from a plain `file://` URL.
 
-`index.html` at the root is the source: it has no doctype or `<head>` because it started life as a Claude artifact, which supplies those. The build script wraps it:
+`src.html` is the source: it has no doctype or `<head>` because it started life as a Claude artifact, which supplies those. The build script wraps it:
 
 ```
-./build.sh          # writes docs/index.html
+./build.sh          # writes index.html, which GitHub Pages serves
 ```
 
 The wax's goo look and the lamps' glow use the canvas `filter` property. Browsers without it still run the page; the wax just draws as plain circles.
@@ -38,13 +38,13 @@ The wax's goo look and the lamps' glow use the canvas `filter` property. Browser
 node test/test.js
 ```
 
-The tests pull the SHA-256 and persistence code out of `index.html` and check them without a browser:
+The tests pull the SHA-256 and persistence code out of `src.html` and check them without a browser:
 
 - SHA-256 against Node's implementation, including message lengths at the padding boundaries.
 - Betti numbers read off the persistence pairs against a brute-force rank computation over GF(2) on the full complex, for sixty random lamps at six scales each.
 
 ## Layout of the source
 
-Everything lives in `index.html`, in this order: SHA-256 and a seeded PRNG, the byte sink, the palettes and lamp silhouette, the `Lamp` class (convection step, persistent homology, barcode serialisation), the drawing code, the LED sign, wall layout, the entropy pool, controls, and the main loop.
+Everything lives in `src.html`, in this order: SHA-256 and a seeded PRNG, the byte sink, the palettes and lamp silhouette, the `Lamp` class (convection step, persistent homology, barcode serialisation), the drawing code, the LED sign, wall layout, the entropy pool, controls, and the main loop.
 
 The persistence computation is the standard one: union-find over edges sorted by length for dimension 0, then column reduction of the triangle boundary matrix over GF(2) for dimension 1. Anything still apart or still open at the filtration's extent gets an infinite bar.
