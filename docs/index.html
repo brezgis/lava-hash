@@ -58,6 +58,8 @@
     color: var(--ink);
   }
   .sub { color: var(--ink-dim); margin: 10px 0 0; max-width: 36ch; }
+  .sub a { color: inherit; text-decoration-color: var(--ink-faint); text-underline-offset: 2px; }
+  .sub a:hover { color: var(--ink); }
 
   .camera { display: grid; gap: 6px; }
   .camera canvas {
@@ -79,7 +81,7 @@
     color: var(--ink);
     min-height: 3em;
   }
-  .hash-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+  .hash-row { display: flex; justify-content: flex-end; align-items: center; gap: 12px; }
 
   .readouts { display: grid; gap: 4px; font-variant-numeric: tabular-nums; }
   .readouts div { display: flex; justify-content: space-between; gap: 12px; border-bottom: 1px dotted var(--line-soft); padding: 3px 0; }
@@ -105,9 +107,6 @@
   button:hover { border-color: var(--ink-dim); }
   button:focus-visible, input:focus-visible { outline: 2px solid var(--wax); outline-offset: 2px; }
 
-  .about { color: var(--ink-dim); font-size: 11.5px; line-height: 1.55; margin: 0; }
-  .about p { margin: 0 0 8px; }
-  .about p:last-child { margin: 0; color: var(--ink-faint); }
 
   @media (max-width: 860px) {
     .app { grid-template-columns: minmax(0, 1fr); grid-template-rows: 58vh minmax(0, 1fr); }
@@ -124,18 +123,17 @@
   <aside class="panel">
     <header>
       <h1>Lava Hash</h1>
-      <p class="sub">Twelve lava lamps on two shelves, a small cousin of the hundred-lamp wall in Cloudflare's lobby. The wax is a simplicial complex. The wall photographs itself and hashes the picture.</p>
+      <p class="sub">Twelve lava lamps on a wall that photographs itself and hashes the picture: a tabletop cousin of Cloudflare's lobby wall and its ancestor, <a href="https://en.wikipedia.org/wiki/Lavarand" target="_blank" rel="noopener">Lavarand</a>. Here the wax is a simplicial complex, and every lamp wears its own barcode.</p>
     </header>
 
     <section class="camera">
-      <canvas id="cam" width="96" height="54" aria-label="What the camera sees"></canvas>
-      <small>What the camera sees: the shelves, never the sign. 96 by 54 pixels, one photo every half second.</small>
+      <canvas id="cam" width="96" height="54" aria-label="Camera view"></canvas>
+      <small>Camera view</small>
     </section>
 
     <section class="hashes">
       <div class="hash-now" id="hashNow">warming up</div>
       <div class="hash-row">
-        <small>SHA-256 of the pool after the latest photo.</small>
         <button id="copy" type="button">Copy hash</button>
       </div>
     </section>
@@ -159,11 +157,6 @@
       </div>
     </section>
 
-    <div class="about">
-      <p>Each lamp holds 30 beads of wax. Two beads that overlap are joined by an edge, three that all overlap fill a triangle. That is a Vietoris–Rips complex at scale ε. The bulb heats the wax at the bottom until a clump breaks off and rises, cools at the top, and sinks to be heated again.</p>
-      <p>Persistent homology follows every component and every hole across all scales. The label under each lamp is its barcode, dim bars for components, bright bars for holes, with the tick at ε. Click a lamp to heat it.</p>
-      <p>Every half second a camera photographs the wall, and the photo, the barcodes, frame timing and your mouse are stirred into a SHA-256 pool. The sign under the shelves scrolls what comes out. Toy, not a CSPRNG.</p>
-    </div>
   </aside>
 </div>
 
@@ -453,6 +446,12 @@
     g.layer = document.createElement('canvas');
     g.layer.width = Math.max(1, Math.ceil(s * dpr)); g.layer.height = Math.max(1, Math.ceil(gh * dpr));
     g.lctx = g.layer.getContext('2d');
+    // the wax silhouette goes through the goo filter here, at MASK_SCALE px per css px: the filter
+    // is the most expensive thing on the page and its output is soft anyway, so a coarser mask
+    // costs nothing visible
+    g.mask = document.createElement('canvas');
+    g.mask.width = Math.max(1, Math.ceil(s * maskScale)); g.mask.height = Math.max(1, Math.ceil(gh * maskScale));
+    g.mctx = g.mask.getContext('2d');
     return g;
   }
 
@@ -567,26 +566,30 @@
     ctx.globalCompositeOperation = 'source-over';
 
     // the wax: drawn flat and unlit into a layer, then lit through its own silhouette
-    const lc = geo.lctx, L = geo.layer;
+    const lc = geo.lctx, L = geo.layer, mc = geo.mctx;
+    const R = eps / 2 * s;
+    // silhouette: beads and filled triangles in one path, so the filter runs once per lamp.
+    // Triangles are wound the same way as the bead circles, so nonzero fill never cancels them.
+    mc.setTransform(maskScale, 0, 0, maskScale, 0, 0);
+    mc.clearRect(0, 0, s, gh);
+    mc.fillStyle = css(pal.waxDark);
+    mc.beginPath();
+    if (showSkel) {
+      for (const t of lamp.tris) {
+        if (t.d > eps) break;
+        const a = lamp.pts[t.i]; let b = lamp.pts[t.j], c = lamp.pts[t.k];
+        if ((b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x) < 0) { const tmp = b; b = c; c = tmp; }
+        mc.moveTo(a.x * s, a.y * s); mc.lineTo(b.x * s, b.y * s); mc.lineTo(c.x * s, c.y * s); mc.closePath();
+      }
+    }
+    for (const p of lamp.pts) { const X = p.x * s, Y = p.y * s; mc.moveTo(X + R, Y); mc.arc(X, Y, R, 0, TAU); }
+    mc.filter = 'url(#goo)';     // blur plus alpha threshold: touching beads melt into one wax blob
+    mc.fill();
+    mc.filter = 'none';
     lc.setTransform(dpr, 0, 0, dpr, 0, 0);
     lc.globalCompositeOperation = 'source-over';
     lc.clearRect(0, 0, s, gh);
-    const R = eps / 2 * s;
-    lc.fillStyle = css(pal.waxDark);
-    lc.filter = 'url(#goo)';     // blur plus alpha threshold: touching beads melt into one wax blob
-    if (showSkel) {
-      lc.beginPath();
-      for (const t of lamp.tris) {
-        if (t.d > eps) break;
-        const a = lamp.pts[t.i], b = lamp.pts[t.j], c = lamp.pts[t.k];
-        lc.moveTo(a.x * s, a.y * s); lc.lineTo(b.x * s, b.y * s); lc.lineTo(c.x * s, c.y * s); lc.closePath();
-      }
-      lc.fill();
-    }
-    lc.beginPath();
-    for (const p of lamp.pts) { const X = p.x * s, Y = p.y * s; lc.moveTo(X + R, Y); lc.arc(X, Y, R, 0, TAU); }
-    lc.fill();
-    lc.filter = 'none';
+    lc.drawImage(geo.mask, 0, 0, s, gh);
     if (showSkel) {
       // seams between facets of the wax
       lc.strokeStyle = 'rgba(0,0,0,0.28)';
@@ -605,16 +608,17 @@
     gr.addColorStop(0, cssA(pal.waxLit, 0.95)); gr.addColorStop(0.3, cssA(pal.waxLit, 0.6));
     gr.addColorStop(0.7, cssA(pal.waxLit, 0.12)); gr.addColorStop(1, cssA(pal.waxLit, 0));
     lc.fillStyle = gr; lc.fillRect(0, 0, s, gh);
+    // each bead: a glow on its underside (dimmer far from the bulb) and a small highlight on top,
+    // stamped from sprites rather than building two gradients per bead per frame
+    const under = beadSprite(pal);
     for (const p of lamp.pts) {
       const X = p.x * s, Y = p.y * s;
       const dist = Math.hypot(X - s / 2, Y - gh);
-      const lit = clamp(1 - dist / (s * 1.7), 0.08, 1);
-      gr = lc.createRadialGradient(X, Y + R * 0.45, 0, X, Y + R * 0.45, R * 1.35);
-      gr.addColorStop(0, cssA(pal.waxLit, 0.55 * lit)); gr.addColorStop(1, cssA(pal.waxLit, 0));
-      lc.fillStyle = gr; lc.fillRect(X - R * 1.4, Y - R, R * 2.8, R * 2.4);
-      gr = lc.createRadialGradient(X - R * 0.3, Y - R * 0.4, 0, X - R * 0.3, Y - R * 0.4, R * 0.55);
-      gr.addColorStop(0, 'rgba(255,255,255,0.16)'); gr.addColorStop(1, 'rgba(255,255,255,0)');
-      lc.fillStyle = gr; lc.fillRect(X - R, Y - R, R * 1.6, R * 1.2);
+      lc.globalAlpha = clamp(1 - dist / (s * 1.7), 0.08, 1);
+      // the underside glow is a circle of radius 1.35R around (X, Y + 0.45R), cut off 1.4R below the bead's centre
+      lc.drawImage(under, 0, 0, SPRITE, SPRITE * 2.3 / 2.7, X - R * 1.35, Y - R * 0.9, R * 2.7, R * 2.3);
+      lc.globalAlpha = 1;
+      lc.drawImage(specSprite, X - R * 0.85, Y - R * 0.95, R * 1.1, R * 1.1);
     }
     // wax far from the bulb sits in its own shadow
     gr = lc.createLinearGradient(0, gh, 0, 0);
@@ -713,13 +717,31 @@
     c.fillStyle = gr; c.fillRect(0, 0, 32, 32);
   }
 
+  // bead lighting sprites: the warm underside glow in each palette's wax colour, and one white highlight
+  const SPRITE = 64;
+  function radialSprite(rgbaAt) {
+    const cv = document.createElement('canvas'); cv.width = cv.height = SPRITE;
+    const c = cv.getContext('2d'), h = SPRITE / 2;
+    const gr = c.createRadialGradient(h, h, 0, h, h, h);
+    gr.addColorStop(0, rgbaAt(1)); gr.addColorStop(1, rgbaAt(0));
+    c.fillStyle = gr; c.fillRect(0, 0, SPRITE, SPRITE);
+    return cv;
+  }
+  const specSprite = radialSprite((k) => `rgba(255,255,255,${0.16 * k})`);
+  const underSprites = new Map();
+  function beadSprite(pal) {
+    if (!underSprites.has(pal)) underSprites.set(pal, radialSprite((k) => cssA(pal.waxLit, 0.55 * k)));
+    return underSprites.get(pal);
+  }
+
   // ---------- wall ----------
   const canvas = $('#wall');
   const ctx = canvas.getContext('2d');
   const wallEl = canvas.parentElement;
   const bg = document.createElement('canvas');
   const bgCtx = bg.getContext('2d');
-  let W = 0, H = 0, dpr = 1;
+  let W = 0, H = 0, dpr = 1, maskScale = 1;
+  const gooBlur = document.querySelector('#goo feGaussianBlur');
   const LAMPS = 12;
   const lamps = [];
   const masterRand = mulberry32(seed32());
@@ -735,6 +757,10 @@
 
   function layout() {
     dpr = Math.min(2, window.devicePixelRatio || 1);
+    // the goo mask runs at no more than 1 px per css px; its blur is set so the wax melts together
+    // exactly as much as it would at full resolution
+    maskScale = Math.min(dpr, 1);
+    gooBlur.setAttribute('stdDeviation', (2.2 * maskScale / dpr).toFixed(2));
     W = wallEl.clientWidth; H = wallEl.clientHeight;
     canvas.width = bg.width = Math.round(W * dpr); canvas.height = bg.height = Math.round(H * dpr);
 
