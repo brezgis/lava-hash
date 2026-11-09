@@ -226,6 +226,7 @@
   }
 
   // ---------- byte sink for the entropy pool ----------
+  const F64 = new Float64Array(1), F64_BYTES = new Uint8Array(F64.buffer);
   class ByteSink {
     constructor() { this.buf = new Uint8Array(1 << 16); this.n = 0; }
     push(b) {
@@ -233,7 +234,7 @@
       this.buf[this.n++] = b & 255;
     }
     u16(v) { this.push(v); this.push(v >> 8); }
-    f64(v) { const b = new Uint8Array(new Float64Array([v]).buffer); for (let i = 0; i < 8; i++) this.push(b[i]); }
+    f64(v) { F64[0] = v; for (let i = 0; i < 8; i++) this.push(F64_BYTES[i]); }
     view() { return this.buf.subarray(0, this.n); }
     reset() { this.n = 0; }
   }
@@ -348,7 +349,7 @@
       edges.sort((a, b) => a.d - b.d);
       const E = edges.length;
       const eidx = new Int32Array(n * n).fill(-1);
-      edges.forEach((e, k) => { eidx[e.i * n + e.j] = k; eidx[e.j * n + e.i] = k; });
+      for (let k = 0; k < E; k++) { const e = edges[k]; eidx[e.i * n + e.j] = eidx[e.j * n + e.i] = k; }
 
       const parent = new Int32Array(n); for (let i = 0; i < n; i++) parent[i] = i;
       const find = (a) => { while (parent[a] !== a) { parent[a] = parent[parent[a]]; a = parent[a]; } return a; };
@@ -363,38 +364,42 @@
       // whatever is still apart at RMAX never merges: one infinite bar per component
       for (let c = 0; c < components; c++) pairs.push({ dim: 0, b: 0, d: Infinity });
 
+      // Triangles in filtration order without sorting: a triangle enters with its longest edge, so
+      // walk the edges in order and close each one with every vertex whose other two edges came earlier.
       const tris = [];
-      for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) {
-        const a = eidx[i * n + j]; if (a < 0) continue;
-        for (let k = j + 1; k < n; k++) {
-          const b = eidx[j * n + k], c = eidx[i * n + k];
-          if (b < 0 || c < 0) continue;
-          const f = [a, b, c].sort((x, y) => x - y);
-          tris.push({ i, j, k, d: edges[f[2]].d, f });
+      for (let k = 0; k < E; k++) {
+        const { i, j, d } = edges[k];
+        for (let v = 0; v < n; v++) {
+          const a = eidx[i * n + v], b = eidx[j * n + v];
+          if (a < 0 || b < 0 || a > k || b > k) continue;
+          tris.push({ i, j, k: v, d, a, b, e: k });   // vertices i, j, k; edges a, b, e
         }
       }
-      tris.sort((a, b) => a.d - b.d);
 
+      // Column reduction over GF(2). A column is a bitset over the edges; pivot[e] is the slot of the
+      // reduced column whose lowest (longest) edge is e. Nothing is allocated per triangle.
+      const words = (E + 31) >> 5;
       const pivot = new Int32Array(E).fill(-1);
-      const cols = [];
-      const killed = new Uint8Array(E);
+      const reduced = new Uint32Array(E * words);
+      const col = new Uint32Array(words);
+      let slots = 0;
       for (const t of tris) {
-        let col = t.f;
-        for (;;) {
-          if (!col.length) break;
-          const p = pivot[col[col.length - 1]];
-          if (p < 0) break;
-          col = symdiff(col, cols[p]);
+        col.fill(0);
+        col[t.a >> 5] ^= 1 << (t.a & 31); col[t.b >> 5] ^= 1 << (t.b & 31); col[t.e >> 5] ^= 1 << (t.e & 31);
+        let low = t.e;
+        while (low >= 0 && pivot[low] >= 0) {
+          const base = pivot[low] * words;
+          let w = low >> 5;
+          for (let x = 0; x <= w; x++) col[x] ^= reduced[base + x];
+          while (w >= 0 && !col[w]) w--;
+          low = w < 0 ? -1 : w * 32 + 31 - Math.clz32(col[w]);
         }
-        if (col.length) {
-          const low = col[col.length - 1];
-          pivot[low] = cols.length;
-          killed[low] = 1;
-          if (t.d - edges[low].d > 1e-6) pairs.push({ dim: 1, b: edges[low].d, d: t.d });
-        }
-        cols.push(col);
+        if (low < 0) continue;
+        pivot[low] = slots;
+        reduced.set(col, slots++ * words);
+        if (t.d - edges[low].d > 1e-6) pairs.push({ dim: 1, b: edges[low].d, d: t.d });
       }
-      for (let k = 0; k < E; k++) if (positive[k] && !killed[k]) pairs.push({ dim: 1, b: edges[k].d, d: Infinity });
+      for (let k = 0; k < E; k++) if (positive[k] && pivot[k] < 0) pairs.push({ dim: 1, b: edges[k].d, d: Infinity });
 
       this.edges = edges; this.tris = tris; this.pairs = pairs;
     }
@@ -415,24 +420,12 @@
     }
   }
 
-  function symdiff(a, b) {
-    const out = [];
-    let i = 0, j = 0;
-    while (i < a.length && j < b.length) {
-      if (a[i] < b[j]) out.push(a[i++]);
-      else if (a[i] > b[j]) out.push(b[j++]);
-      else { i++; j++; }
-    }
-    while (i < a.length) out.push(a[i++]);
-    while (j < b.length) out.push(b[j++]);
-    return out;
-  }
-
   // ---------- lamp geometry and cached drawing resources ----------
   // geo: cx = centre x, gy = top of glass, s = pixels per unit (glass max width)
-  function makeGeo(cx, gy, s) {
-    const g = { cx, gy, s, x0: cx - s / 2, gh: A * s };
-    const tw = LAMP.glassTopW / 2 * s, bw = LAMP.glassBotW / 2 * s, gh = A * s, rb = 0.07 * s;
+  function makeGeo(cx, gy, s, pal) {
+    const x0 = cx - s / 2, gh = A * s;
+    const g = { cx, gy, s, x0, gh };
+    const tw = LAMP.glassTopW / 2 * s, bw = LAMP.glassBotW / 2 * s, rb = 0.07 * s;
     const path = new Path2D();
     path.moveTo(cx - tw, gy);
     path.lineTo(cx + tw, gy);
@@ -442,16 +435,31 @@
     path.arcTo(cx - bw, gy + gh, cx - bw, gy + gh - rb * 2.2, rb);
     path.closePath();
     g.glass = path;
-    // an offscreen layer the size of the glass, for lighting the wax through a mask
-    g.layer = document.createElement('canvas');
-    g.layer.width = Math.max(1, Math.ceil(s * dpr)); g.layer.height = Math.max(1, Math.ceil(gh * dpr));
-    g.lctx = g.layer.getContext('2d');
-    // the wax silhouette goes through the goo filter here, at MASK_SCALE px per css px: the filter
-    // is the most expensive thing on the page and its output is soft anyway, so a coarser mask
-    // costs nothing visible
-    g.mask = document.createElement('canvas');
-    g.mask.width = Math.max(1, Math.ceil(s * maskScale)); g.mask.height = Math.max(1, Math.ceil(gh * maskScale));
-    g.mctx = g.mask.getContext('2d');
+    // everything drawn per frame that depends only on the layout is built here once
+    // glass: a bright edge on the left, a softer one on the right, a shadow toward the edges
+    let gr = ctx.createLinearGradient(x0, 0, x0 + s, 0);
+    gr.addColorStop(0, 'rgba(0,0,0,0.28)');
+    gr.addColorStop(0.05, 'rgba(255,255,255,0.05)');
+    gr.addColorStop(0.11, 'rgba(255,255,255,0.22)');
+    gr.addColorStop(0.16, 'rgba(255,255,255,0.20)');
+    gr.addColorStop(0.26, 'rgba(255,255,255,0.02)');
+    gr.addColorStop(0.72, 'rgba(0,0,0,0)');
+    gr.addColorStop(0.9, 'rgba(255,255,255,0.09)');
+    gr.addColorStop(0.97, 'rgba(255,255,255,0.03)');
+    gr.addColorStop(1, 'rgba(0,0,0,0.35)');
+    g.sheen = gr;
+    g.rim = cssA(pal.liquidLit, 0.35);
+    g.bar0 = cssA(pal.liquidLit, 0.55); g.bar1 = cssA(pal.light, 0.95);
+    // the wax, in the lamp's own coordinates (origin at the top left of the glass's box):
+    // its flat colour, a broad wash of light from the bulb, and the shadow far from it
+    g.waxDark = css(pal.waxDark);
+    gr = waxCtx.createRadialGradient(s / 2, gh, 0, s / 2, gh, s * 1.4);
+    gr.addColorStop(0, cssA(pal.waxLit, 0.95)); gr.addColorStop(0.3, cssA(pal.waxLit, 0.6));
+    gr.addColorStop(0.7, cssA(pal.waxLit, 0.12)); gr.addColorStop(1, cssA(pal.waxLit, 0));
+    g.waxWash = gr;
+    gr = waxCtx.createLinearGradient(0, gh, 0, 0);
+    gr.addColorStop(0, 'rgba(0,0,0,0)'); gr.addColorStop(0.5, 'rgba(0,0,0,0.14)'); gr.addColorStop(1, 'rgba(0,0,0,0.42)');
+    g.waxShade = gr;
     return g;
   }
 
@@ -543,14 +551,12 @@
     ctx.restore();
   }
 
-  // The glass and everything inside it. Per frame.
-  function drawGlass(ctx, lamp, geo, eps, showSkel) {
+  // The liquid: a tint you can see the wall through, made bright by the bulb shining up into it.
+  // Static, so it is baked into the background.
+  function drawLiquid(ctx, geo, pal) {
     const { cx, gy, s, gh, x0 } = geo;
-    const pal = lamp.pal;
     ctx.save();
     ctx.clip(geo.glass);
-    // the liquid, lit from the bulb below
-    // the liquid is a tint you can see the wall through; what makes it bright is the bulb shining up into it
     let gr = ctx.createLinearGradient(0, gy, 0, gy + gh);
     gr.addColorStop(0, cssA(pal.liquid, 0.42)); gr.addColorStop(1, cssA(pal.liquid, 0.62));
     ctx.fillStyle = gr; ctx.fillRect(x0, gy, s, gh);
@@ -563,108 +569,128 @@
     gr = ctx.createLinearGradient(0, gy + gh, 0, gy);
     gr.addColorStop(0, cssA(pal.liquidLit, 0.22)); gr.addColorStop(0.6, cssA(pal.liquidLit, 0.1)); gr.addColorStop(1, cssA(pal.liquidLit, 0.05));
     ctx.fillStyle = gr; ctx.fillRect(x0, gy, s, gh);
-    ctx.globalCompositeOperation = 'source-over';
+    ctx.restore();
+  }
 
-    // the wax: drawn flat and unlit into a layer, then lit through its own silhouette
-    const lc = geo.lctx, L = geo.layer, mc = geo.mctx;
-    const R = eps / 2 * s;
-    // silhouette: beads and filled triangles in one path, so the filter runs once per lamp.
+  // The wax of every lamp, drawn flat and unlit into one atlas and then lit through its own silhouette.
+  // All twelve silhouettes go through the goo filter in a single pass: the filter is the most
+  // expensive thing on the page, so it runs once, at one pixel per css pixel, and its output is
+  // scaled up into the full-resolution atlas. Per frame.
+  function drawWax(eps, showSkel) {
+    const R = eps / 2;
+    // Both atlases are cleared cell by cell. (In Chrome 156, clearing a whole canvas at once after a
+    // filtered fill left the old wax in place, and the lamps filled up with trails.)
+    for (const { geo: g } of lamps) {
+      maskCtx.setTransform(1, 0, 0, 1, g.ax, g.ay);
+      maskCtx.clearRect(...g.cell);
+      waxCtx.setTransform(dpr, 0, 0, dpr, g.ax * dpr, g.ay * dpr);
+      waxCtx.clearRect(...g.box);
+    }
+    // silhouettes: beads and filled triangles in one path (fill closes each triangle by itself).
     // Triangles are wound the same way as the bead circles, so nonzero fill never cancels them.
-    mc.setTransform(maskScale, 0, 0, maskScale, 0, 0);
-    mc.clearRect(0, 0, s, gh);
-    mc.fillStyle = css(pal.waxDark);
-    mc.beginPath();
-    if (showSkel) {
-      for (const t of lamp.tris) {
-        if (t.d > eps) break;
-        const a = lamp.pts[t.i]; let b = lamp.pts[t.j], c = lamp.pts[t.k];
-        if ((b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x) < 0) { const tmp = b; b = c; c = tmp; }
-        mc.moveTo(a.x * s, a.y * s); mc.lineTo(b.x * s, b.y * s); mc.lineTo(c.x * s, c.y * s); mc.closePath();
+    let c = maskCtx;
+    c.setTransform(1, 0, 0, 1, 0, 0);
+    c.fillStyle = '#fff';
+    c.beginPath();
+    for (const { pts, tris, geo: { s, ax, ay } } of lamps) {
+      if (showSkel) {
+        for (const t of tris) {
+          if (t.d > eps) break;
+          const a = pts[t.i]; let b = pts[t.j], d = pts[t.k];
+          if ((b.x - a.x) * (d.y - a.y) - (b.y - a.y) * (d.x - a.x) < 0) { const tmp = b; b = d; d = tmp; }
+          c.moveTo(ax + a.x * s, ay + a.y * s); c.lineTo(ax + b.x * s, ay + b.y * s); c.lineTo(ax + d.x * s, ay + d.y * s);
+        }
       }
+      const r = R * s;
+      for (const p of pts) { const X = ax + p.x * s, Y = ay + p.y * s; c.moveTo(X + r, Y); c.arc(X, Y, r, 0, TAU); }
     }
-    for (const p of lamp.pts) { const X = p.x * s, Y = p.y * s; mc.moveTo(X + R, Y); mc.arc(X, Y, R, 0, TAU); }
-    mc.filter = 'url(#goo)';     // blur plus alpha threshold: touching beads melt into one wax blob
-    mc.fill();
-    mc.filter = 'none';
-    lc.setTransform(dpr, 0, 0, dpr, 0, 0);
-    lc.globalCompositeOperation = 'source-over';
-    lc.clearRect(0, 0, s, gh);
-    lc.drawImage(geo.mask, 0, 0, s, gh);
-    if (showSkel) {
-      // seams between facets of the wax
-      lc.strokeStyle = 'rgba(0,0,0,0.28)';
-      lc.lineWidth = Math.max(0.7, s * 0.01);
-      lc.beginPath();
-      for (const e of lamp.edges) {
-        if (e.d > eps) break;
-        const a = lamp.pts[e.i], b = lamp.pts[e.j];
-        lc.moveTo(a.x * s, a.y * s); lc.lineTo(b.x * s, b.y * s);
-      }
-      lc.stroke();
-    }
-    // light from the bulb, only where there is wax: a broad wash, then each bead's underside
-    lc.globalCompositeOperation = 'source-atop';
-    gr = lc.createRadialGradient(s / 2, gh, 0, s / 2, gh, s * 1.4);
-    gr.addColorStop(0, cssA(pal.waxLit, 0.95)); gr.addColorStop(0.3, cssA(pal.waxLit, 0.6));
-    gr.addColorStop(0.7, cssA(pal.waxLit, 0.12)); gr.addColorStop(1, cssA(pal.waxLit, 0));
-    lc.fillStyle = gr; lc.fillRect(0, 0, s, gh);
-    // each bead: a glow on its underside (dimmer far from the bulb) and a small highlight on top,
-    // stamped from sprites rather than building two gradients per bead per frame
-    const under = beadSprite(pal);
-    for (const p of lamp.pts) {
-      const X = p.x * s, Y = p.y * s;
-      const dist = Math.hypot(X - s / 2, Y - gh);
-      lc.globalAlpha = clamp(1 - dist / (s * 1.7), 0.08, 1);
-      // the underside glow is a circle of radius 1.35R around (X, Y + 0.45R), cut off 1.4R below the bead's centre
-      lc.drawImage(under, 0, 0, SPRITE, SPRITE * 2.3 / 2.7, X - R * 1.35, Y - R * 0.9, R * 2.7, R * 2.3);
-      lc.globalAlpha = 1;
-      lc.drawImage(specSprite, X - R * 0.85, Y - R * 0.95, R * 1.1, R * 1.1);
-    }
-    // wax far from the bulb sits in its own shadow
-    gr = lc.createLinearGradient(0, gh, 0, 0);
-    gr.addColorStop(0, 'rgba(0,0,0,0)'); gr.addColorStop(0.5, 'rgba(0,0,0,0.14)'); gr.addColorStop(1, 'rgba(0,0,0,0.42)');
-    lc.fillStyle = gr; lc.fillRect(0, 0, s, gh);
-    ctx.drawImage(L, x0, gy, s, gh);
+    c.filter = 'url(#goo)';     // blur plus alpha threshold: touching beads melt into one wax blob
+    c.fill();
+    c.filter = 'none';
 
-    // glass: a bright edge on the left, a softer one on the right, a shadow toward the edges
-    gr = ctx.createLinearGradient(x0, 0, x0 + s, 0);
-    gr.addColorStop(0, 'rgba(0,0,0,0.28)');
-    gr.addColorStop(0.05, 'rgba(255,255,255,0.05)');
-    gr.addColorStop(0.11, 'rgba(255,255,255,0.22)');
-    gr.addColorStop(0.16, 'rgba(255,255,255,0.20)');
-    gr.addColorStop(0.26, 'rgba(255,255,255,0.02)');
-    gr.addColorStop(0.72, 'rgba(0,0,0,0)');
-    gr.addColorStop(0.9, 'rgba(255,255,255,0.09)');
-    gr.addColorStop(0.97, 'rgba(255,255,255,0.03)');
-    gr.addColorStop(1, 'rgba(0,0,0,0.35)');
-    ctx.fillStyle = gr; ctx.fillRect(x0, gy, s, gh);
+    c = waxCtx;
+    for (const lamp of lamps) {
+      const g = lamp.geo, { s, gh, box } = g, r = R * s;
+      c.setTransform(dpr, 0, 0, dpr, g.ax * dpr, g.ay * dpr);
+      c.globalCompositeOperation = 'source-over';
+      c.drawImage(maskCanvas, g.ax + box[0], g.ay + box[1], box[2], box[3], ...box);
+      c.globalCompositeOperation = 'source-atop';
+      c.fillStyle = g.waxDark; c.fillRect(...box);
+      if (showSkel) {
+        // seams between facets of the wax
+        c.globalCompositeOperation = 'source-over';
+        c.strokeStyle = 'rgba(0,0,0,0.28)';
+        c.lineWidth = Math.max(0.7, s * 0.01);
+        c.beginPath();
+        for (const e of lamp.edges) {
+          if (e.d > eps) break;
+          const a = lamp.pts[e.i], b = lamp.pts[e.j];
+          c.moveTo(a.x * s, a.y * s); c.lineTo(b.x * s, b.y * s);
+        }
+        c.stroke();
+        c.globalCompositeOperation = 'source-atop';
+      }
+      // light from the bulb, only where there is wax: a broad wash, then each bead's underside
+      c.fillStyle = g.waxWash; c.fillRect(...box);
+      // each bead: a glow on its underside (dimmer far from the bulb) and a small highlight on top,
+      // stamped from sprites rather than building two gradients per bead per frame
+      const under = beadSprite(lamp.pal);
+      for (const p of lamp.pts) {
+        const X = p.x * s, Y = p.y * s;
+        const dist = Math.hypot(X - s / 2, Y - gh);
+        c.globalAlpha = clamp(1 - dist / (s * 1.7), 0.08, 1);
+        // the underside glow is a circle of radius 1.35R around (X, Y + 0.45R), cut off 1.4R below the bead's centre
+        c.drawImage(under, 0, 0, SPRITE, SPRITE * 2.3 / 2.7, X - r * 1.35, Y - r * 0.9, r * 2.7, r * 2.3);
+        c.globalAlpha = 1;
+        c.drawImage(specSprite, X - r * 0.85, Y - r * 0.95, r * 1.1, r * 1.1);
+      }
+      // wax far from the bulb sits in its own shadow
+      c.fillStyle = g.waxShade; c.fillRect(...box);
+    }
+    c.globalCompositeOperation = 'source-over';
+  }
+
+  // The glass and the wax inside it. Per frame.
+  function drawGlass(ctx, geo) {
+    const { gy, s, gh, x0 } = geo;
+    ctx.save();
+    ctx.clip(geo.glass);
+    ctx.drawImage(waxCanvas, ...geo.src, ...geo.dst);
+    ctx.fillStyle = geo.sheen; ctx.fillRect(x0, gy, s, gh);
     // the glass rim catches the bulb's colour
     ctx.globalCompositeOperation = 'lighter';
     ctx.lineWidth = Math.max(1.5, s * 0.03);
-    ctx.strokeStyle = cssA(pal.liquidLit, 0.35);
+    ctx.strokeStyle = geo.rim;
     ctx.stroke(geo.glass);
-    ctx.globalCompositeOperation = 'source-over';
     ctx.restore();
     ctx.strokeStyle = 'rgba(255,255,255,0.18)'; ctx.lineWidth = 1; ctx.stroke(geo.glass);
   }
 
   function drawLabel(ctx, lamp, eps) {
-    const { cx, s, label } = lamp.geo;
+    const { cx, s, label, bar0, bar1 } = lamp.geo;
     const { x, y, w, h, font } = label;
-    const pal = lamp.pal;
-    const shown = lamp.pairs.filter((p) => p.d - p.b > 0.008);
-    shown.sort((a, b) => (a.dim - b.dim) || (a.b - b.b) || (b.d - a.d));
+    if (lamp.barsOf !== lamp.pairs) {     // the bars only change when the homology is recomputed
+      lamp.barsOf = lamp.pairs;
+      lamp.bars = lamp.pairs.filter((p) => p.d - p.b > 0.008);
+      lamp.bars.sort((a, b) => (a.dim - b.dim) || (a.b - b.b) || (b.d - a.d));
+    }
+    const shown = lamp.bars;
     const rowH = Math.min(3, h / Math.max(1, shown.length));
     const barH = Math.max(0.8, rowH * 0.7);
     const xOf = (v) => x + Math.min(1, v / RMAX) * w;
     ctx.fillStyle = 'rgba(255,255,255,0.05)';
     ctx.fillRect(x, y, w, h);
-    shown.forEach((p, r) => {
-      const yy = y + r * rowH;
-      const x0 = xOf(p.b), x1 = p.d === Infinity ? x + w : xOf(p.d);
-      ctx.fillStyle = p.dim === 0 ? cssA(pal.liquidLit, 0.55) : cssA(pal.light, 0.95);
-      ctx.fillRect(x0, yy, Math.max(1, x1 - x0), barH);
-    });
+    // one path per dimension: dim bars for components, bright ones for holes
+    for (const dim of [0, 1]) {
+      ctx.beginPath();
+      shown.forEach((p, r) => {
+        if (p.dim !== dim) return;
+        const x0 = xOf(p.b), x1 = p.d === Infinity ? x + w : xOf(p.d);
+        ctx.rect(x0, y + r * rowH, Math.max(1, x1 - x0), barH);
+      });
+      ctx.fillStyle = dim === 0 ? bar0 : bar1;
+      ctx.fill();
+    }
     const ex = xOf(eps);
     ctx.fillStyle = 'rgba(238,228,216,0.75)';
     ctx.fillRect(ex - 0.5, y - 2, 1, h + 4);
@@ -702,7 +728,7 @@
   function signStep(dt, visible) {
     sign.acc += dt * sign.speed;
     const n = Math.floor(sign.acc);
-    if (n > 0) { sign.acc -= n; sign.head += n; }
+    if (n > 0) { sign.acc -= n; sign.head += n; signDirty = true; }
     while (sign.cols.length - sign.head < visible * 1.5) {
       if (sign.pending) { signAppend(sign.pending); sign.pending = null; }
       else signAppend('      ');
@@ -738,10 +764,16 @@
   const canvas = $('#wall');
   const ctx = canvas.getContext('2d');
   const wallEl = canvas.parentElement;
-  const bg = document.createElement('canvas');
+  const bg = document.createElement('canvas');          // everything that never moves, redrawn on resize
   const bgCtx = bg.getContext('2d');
-  let W = 0, H = 0, dpr = 1, maskScale = 1;
-  const gooBlur = document.querySelector('#goo feGaussianBlur');
+  const waxCanvas = document.createElement('canvas');   // the wax of all twelve lamps, redrawn per frame
+  const waxCtx = waxCanvas.getContext('2d');
+  const maskCanvas = document.createElement('canvas');  // their silhouettes, at one pixel per css pixel
+  const maskCtx = maskCanvas.getContext('2d');
+  const gooBlur = document.querySelector('#goo feGaussianBlur'), gooThreshold = document.querySelector('#goo feColorMatrix');
+  let W = 0, H = 0, dpr = 1;
+  let wallPx = 0;                                       // device pixel rows above the sign
+  let wallDirty = true, signDirty = true;
   const LAMPS = 12;
   const lamps = [];
   const masterRand = mulberry32(seed32());
@@ -757,10 +789,7 @@
 
   function layout() {
     dpr = Math.min(2, window.devicePixelRatio || 1);
-    // the goo mask runs at no more than 1 px per css px; its blur is set so the wax melts together
-    // exactly as much as it would at full resolution
-    maskScale = Math.min(dpr, 1);
-    gooBlur.setAttribute('stdDeviation', (2.2 * maskScale / dpr).toFixed(2));
+    watchPixelRatio();
     W = wallEl.clientWidth; H = wallEl.clientHeight;
     canvas.width = bg.width = Math.round(W * dpr); canvas.height = bg.height = Math.round(H * dpr);
 
@@ -782,16 +811,47 @@
     const shelfT = Math.max(3, Math.round(s * 0.13));
     grid.shelfT = shelfT;
     const font = `${clamp(s * 0.1, 9, 13).toFixed(1)}px "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace`;
+    wallPx = Math.round((H - led.h) * dpr);
+    // The wax atlas: a cell per lamp, padded so neither the goo's blur nor a bead's sprites reach a
+    // neighbour. Each lamp sits in its cell at the same sub-pixel offset it has on screen, so copying
+    // its wax out is a whole-pixel move with no resampling.
+    const pad = Math.ceil((0.2 * s + 8) * dpr);
+    const pw = Math.ceil(s * dpr) + 1, ph = Math.ceil(A * s * dpr) + 1;
+    const cw = pw + 2 * pad, ch = ph + 2 * pad;
+    waxCanvas.width = grid.cols * cw; waxCanvas.height = grid.rows * ch;
+    maskCanvas.width = Math.ceil(waxCanvas.width / dpr); maskCanvas.height = Math.ceil(waxCanvas.height / dpr);
+    // The goo's blur is 2.2 device pixels whatever the mask's resolution. On a 1x screen the mask is
+    // drawn as is, so its edge can be hard; when it is scaled up the threshold is softened to about
+    // half a mask pixel, which keeps the outline smooth instead of stair-stepped.
+    gooBlur.setAttribute('stdDeviation', (2.2 / dpr).toFixed(2));
+    const k = dpr > 1 ? 6 : 22;
+    gooThreshold.setAttribute('values', `1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 ${k} ${(0.5 - k * 0.477).toFixed(2)}`);
     lamps.forEach((lamp, i) => {
       const c = i % grid.cols, r = Math.floor(i / grid.cols);
       const cx = (c + 0.5) * grid.cellW;
       const shelfY = grid.top + (r + 1) * grid.rowH - shelfT - LABEL_H * s;
       const gy = shelfY - (LAMP.baseLoH + LAMP.baseUpH + A) * s;
-      lamp.geo = makeGeo(cx, gy, s);
-      lamp.geo.shelfY = shelfY;
-      lamp.geo.label = { x: cx - s * 0.5, y: shelfY + shelfT + s * 0.1, w: s, h: s * 0.36, font };
+      const geo = lamp.geo = makeGeo(cx, gy, s, lamp.pal);
+      geo.shelfY = shelfY;
+      geo.label = { x: cx - s * 0.5, y: shelfY + shelfT + s * 0.1, w: s, h: s * 0.36, font };
+      const fx = geo.x0 * dpr, fy = gy * dpr, sx = c * cw + pad, sy = r * ch + pad;
+      geo.ax = (sx + fx - Math.floor(fx)) / dpr; geo.ay = (sy + fy - Math.floor(fy)) / dpr;
+      geo.src = [sx, sy, pw, ph];
+      geo.dst = [Math.floor(fx) / dpr, Math.floor(fy) / dpr, pw / dpr, ph / dpr];
+      // in the lamp's own coordinates: its whole cell, and the box around the glass that is shown
+      geo.cell = [c * cw / dpr - geo.ax, r * ch / dpr - geo.ay, cw / dpr, ch / dpr];
+      geo.box = [-1, -1, s + 2, geo.gh + 2];
     });
     renderBackground();
+    wallDirty = signDirty = true;
+  }
+
+  // Moving the window to a screen with another pixel density doesn't resize anything, so watch for it.
+  let pixelRatioQuery = null;
+  function watchPixelRatio() {
+    pixelRatioQuery?.removeEventListener('change', layout);
+    pixelRatioQuery = matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`);
+    pixelRatioQuery.addEventListener('change', layout);
   }
 
   function renderBackground() {
@@ -815,6 +875,7 @@
     }
     for (const lamp of lamps) drawShelfLight(c, lamp.geo, lamp.pal, lamp.geo.shelfY, grid.shelfT);
     for (const lamp of lamps) drawHardware(c, lamp.geo, lamp.pal);
+    for (const lamp of lamps) drawLiquid(c, lamp.geo, lamp.pal);
 
     // the sign's bezel and its unlit dots
     c.fillStyle = '#06040a'; c.fillRect(0, H - led.h, W, led.h);
@@ -829,7 +890,11 @@
     c.fill();
   }
 
+  // The sign's strip of the canvas, redrawn only when the text has moved.
   function drawSign() {
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.drawImage(bg, 0, wallPx, bg.width, bg.height - wallPx, 0, wallPx, bg.width, bg.height - wallPx);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     const p = led.pitch, size = p * 1.9;
     ctx.globalCompositeOperation = 'lighter';
     for (let col = 0; col < led.visible; col++) {
@@ -843,6 +908,11 @@
   }
 
   // ---------- entropy pool ----------
+  // The photo is shrunk on the GPU first, into a canvas just big enough to stay GPU-backed, so the
+  // only pixels read back to the CPU are a few thousand rather than the whole Retina-sized wall.
+  const camLens = document.createElement('canvas');
+  camLens.width = 192; camLens.height = 108;
+  const camLensCtx = camLens.getContext('2d');
   const camCanvas = document.createElement('canvas');
   camCanvas.width = 96; camCanvas.height = 54;
   const camCtx = camCanvas.getContext('2d', { willReadFrequently: true });
@@ -855,7 +925,8 @@
   let latest = '';
 
   function snapshot() {
-    camCtx.drawImage(canvas, 0, 0, canvas.width, Math.round((H - led.h) * dpr), 0, 0, 96, 54);   // the shelves, never the sign
+    camLensCtx.drawImage(canvas, 0, 0, canvas.width, wallPx, 0, 0, camLens.width, camLens.height);   // the shelves, never the sign
+    camCtx.drawImage(camLens, 0, 0, 96, 54);
     const px = camCtx.getImageData(0, 0, 96, 54).data;
     camViewCtx.drawImage(camCanvas, 0, 0);
     const chunk = sink.view();
@@ -874,14 +945,15 @@
     emit(out);
   }
 
-  const hashNow = $('#hashNow');
+  const hashNow = $('#hashNow'), stPhotos = $('#stPhotos'), stBytes = $('#stBytes'), stMs = $('#stMs');
   function emit(h) {
     latest = h;
     hashNow.textContent = h;
     if (!sign.pending && stats.photos === 1) sign.cols.length = sign.head + led.visible;   // first hash scrolls in right away
     sign.pending = `      ${h}`;
-    $('#stPhotos').textContent = stats.photos.toLocaleString();
-    $('#stBytes').textContent = fmtBytes(stats.bytes);
+    stPhotos.textContent = stats.photos.toLocaleString();
+    stBytes.textContent = fmtBytes(stats.bytes);
+    stMs.textContent = `${phMs.toFixed(2)} ms`;
   }
   function fmtBytes(n) {
     if (n < 1e3) return `${n} B`;
@@ -924,46 +996,66 @@
   });
 
   // ---------- main loop ----------
-  let last = performance.now(), t = 0, lastShot = -Infinity, phMs = 0, phCursor = 0;
+  // The simulation advances in fixed steps of real time, so it runs at the same speed at 60 Hz, 120 Hz
+  // or anything else, and a frame that falls between two steps has nothing new to draw.
+  const STEP = 1 / 60;
+  const PH_PER_STEP = LAMPS / 2;     // each lamp's homology is recomputed every other step
   const speed = reduced ? 0.35 : 1;
-  const PH_PER_FRAME = Math.ceil(LAMPS / 2);
+  const stB0 = $('#stB0'), stB1 = $('#stB1');
+  let last = performance.now(), acc = 0, t = 0, lastShot = -Infinity, phMs = 0, phCursor = 0;
+  let drawnView = '', B0 = -1, B1 = -1;
 
   function frame(now) {
-    const dt = Math.min(0.05, (now - last) / 1000) * speed;
+    const dt = Math.min(0.05, (now - last) / 1000);
     last = now;
-    const epsBase = +epsInput.value;
+    // the camera photographs the frame already on screen: by now the GPU has finished drawing it,
+    // so reading the photo back doesn't stall waiting for this frame's work
+    if (now - lastShot > 500) { lastShot = now; snapshot(); }
     if (!paused) {
-      t += dt;
-      for (const lamp of lamps) lamp.step(dt, t);
-      const t0 = performance.now();
-      for (let k = 0; k < PH_PER_FRAME; k++) {
-        const lamp = lamps[phCursor];
-        lamp.computePH(); lamp.serialize(sink);
-        phCursor = (phCursor + 1) % LAMPS;
+      acc += dt * speed;
+      let steps = 0;
+      // a little slack, so frame-time jitter at 60 Hz doesn't turn one step a frame into zero then two
+      while (acc > STEP * 0.98) {
+        acc -= STEP; t += STEP; steps++;
+        for (const lamp of lamps) lamp.step(STEP, t);
+        signStep(STEP, led.visible);
       }
-      phMs = phMs * 0.9 + (performance.now() - t0) * 0.1;
+      if (steps) {
+        // homology after the last step only: catching up after a slow frame recomputes no lamp twice
+        const t0 = performance.now();
+        for (let k = Math.min(LAMPS, steps * PH_PER_STEP); k > 0; k--) {
+          const lamp = lamps[phCursor];
+          lamp.computePH(); lamp.serialize(sink);
+          phCursor = (phCursor + 1) % LAMPS;
+        }
+        phMs = phMs * 0.9 + (performance.now() - t0) * 0.1;
+        wallDirty = true;
+      }
     }
-    const eps = clamp(epsBase + (breathe.checked && !paused ? 0.03 * Math.sin(t * TAU / 11) : 0), 0.08, 0.32);
+    const eps = clamp(+epsInput.value + (breathe.checked && !paused ? 0.03 * Math.sin(t * TAU / 11) : 0), 0.08, 0.32);
     const showSkel = skel.checked;
+    const view = `${eps} ${showSkel}`;
 
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.drawImage(bg, 0, 0);
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-
-    let B0 = 0, B1 = 0;
-    for (const lamp of lamps) {
-      drawGlass(ctx, lamp, lamp.geo, eps, showSkel);
-      const [b0, b1] = drawLabel(ctx, lamp, eps); B0 += b0; B1 += b1;
+    if (wallDirty || view !== drawnView) {
+      wallDirty = false; drawnView = view;
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.drawImage(bg, 0, 0, bg.width, wallPx, 0, 0, bg.width, wallPx);
+      ctx.save();
+      ctx.beginPath(); ctx.rect(0, 0, bg.width, wallPx); ctx.clip();   // leave the sign's strip alone
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      drawWax(eps, showSkel);
+      let b0 = 0, b1 = 0;
+      for (const lamp of lamps) {
+        drawGlass(ctx, lamp.geo);
+        const [x, y] = drawLabel(ctx, lamp, eps); b0 += x; b1 += y;
+      }
+      ctx.restore();
+      if (b0 !== B0) stB0.textContent = B0 = b0;
+      if (b1 !== B1) stB1.textContent = B1 = b1;
     }
-
-    if (!paused) signStep(dt, led.visible);
-    drawSign();
+    if (signDirty) { signDirty = false; drawSign(); }
 
     sink.f64(now); sink.f64(dt);
-    $('#stB0').textContent = B0; $('#stB1').textContent = B1;
-    $('#stMs').textContent = `${phMs.toFixed(2)} ms`;
-
-    if (now - lastShot > 500) { lastShot = now; snapshot(); }
     requestAnimationFrame(frame);
   }
 
